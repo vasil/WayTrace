@@ -5,6 +5,7 @@ plugins {
 
 android {
     compileSdk 34
+    namespace "com.vasil.sensorlogger"
 
     defaultConfig {
         applicationId "com.vasil.sensorlogger"
