@@ -120,7 +120,10 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
         btnStop.setOnClickListener { stopRecording() }
 
-        setupCamera()
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+            == PackageManager.PERMISSION_GRANTED) {
+            setupCamera()
+        }
         updateUI()
     }
 
@@ -353,21 +356,21 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                 btnStop.visibility = View.GONE
                 tvStats.visibility = View.GONE
                 btnPrimary.text = "START"
-                btnPrimary.setBackgroundColor(0xCC007700.toInt())
+                btnPrimary.setBackgroundColor(0xFF007700.toInt())
             }
             RecordingState.RECORDING -> {
                 tvTimer.visibility = View.VISIBLE
                 btnStop.visibility = View.VISIBLE
                 tvStats.visibility = View.VISIBLE
                 btnPrimary.text = "PAUSE"
-                btnPrimary.setBackgroundColor(0xCCCC0000.toInt())
+                btnPrimary.setBackgroundColor(0xFFCC0000.toInt())
             }
             RecordingState.PAUSED -> {
                 tvTimer.visibility = View.VISIBLE
                 btnStop.visibility = View.VISIBLE
                 tvStats.visibility = View.VISIBLE
                 btnPrimary.text = "RESUME"
-                btnPrimary.setBackgroundColor(0xCC007700.toInt())
+                btnPrimary.setBackgroundColor(0xFF007700.toInt())
             }
             RecordingState.STOPPED -> {
                 tvTimer.visibility = View.GONE
@@ -375,7 +378,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                 tvStats.visibility = View.VISIBLE
                 tvStats.text = buildStatsLine()
                 btnPrimary.text = "START"
-                btnPrimary.setBackgroundColor(0xCC007700.toInt())
+                btnPrimary.setBackgroundColor(0xFF007700.toInt())
             }
         }
     }
