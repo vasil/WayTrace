@@ -1,0 +1,105 @@
+1<?xml version="1.0" encoding="utf-8"?>
+2<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+3    package="com.vasil.sensorlogger"
+4    android:versionCode="1"
+5    android:versionName="1.0" >
+6
+7    <uses-sdk
+8        android:minSdkVersion="26"
+9        android:targetSdkVersion="34" />
+10
+11    <uses-permission
+11-->/home/vasil/Projects/WayTrace/app/src/main/AndroidManifest.xml:4:5-5:38
+12        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+12-->/home/vasil/Projects/WayTrace/app/src/main/AndroidManifest.xml:4:22-78
+13        android:maxSdkVersion="28" />
+13-->/home/vasil/Projects/WayTrace/app/src/main/AndroidManifest.xml:5:9-35
+14    <uses-permission
+14-->/home/vasil/Projects/WayTrace/app/src/main/AndroidManifest.xml:6:5-7:38
+15        android:name="android.permission.READ_EXTERNAL_STORAGE"
+15-->/home/vasil/Projects/WayTrace/app/src/main/AndroidManifest.xml:6:22-77
+16        android:maxSdkVersion="32" />
+16-->/home/vasil/Projects/WayTrace/app/src/main/AndroidManifest.xml:7:9-35
+17
+18    <uses-feature
+18-->/home/vasil/Projects/WayTrace/app/src/main/AndroidManifest.xml:9:5-98
+19        android:name="android.hardware.sensor.accelerometer"
+19-->/home/vasil/Projects/WayTrace/app/src/main/AndroidManifest.xml:9:19-71
+20        android:required="true" />
+20-->/home/vasil/Projects/WayTrace/app/src/main/AndroidManifest.xml:9:72-95
+21    <uses-feature
+21-->/home/vasil/Projects/WayTrace/app/src/main/AndroidManifest.xml:10:5-94
+22        android:name="android.hardware.sensor.gyroscope"
+22-->/home/vasil/Projects/WayTrace/app/src/main/AndroidManifest.xml:10:19-67
+23        android:required="true" />
+23-->/home/vasil/Projects/WayTrace/app/src/main/AndroidManifest.xml:10:68-91
+24
+25    <permission
+25-->[androidx.core:core:1.12.0] /home/vasil/.gradle/caches/8.13/transforms/fec989fa26f3421bac7a449948eaa348/transformed/core-1.12.0/AndroidManifest.xml:22:5-24:47
+26        android:name="com.vasil.sensorlogger.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
+26-->[androidx.core:core:1.12.0] /home/vasil/.gradle/caches/8.13/transforms/fec989fa26f3421bac7a449948eaa348/transformed/core-1.12.0/AndroidManifest.xml:23:9-81
+27        android:protectionLevel="signature" />
+27-->[androidx.core:core:1.12.0] /home/vasil/.gradle/caches/8.13/transforms/fec989fa26f3421bac7a449948eaa348/transformed/core-1.12.0/AndroidManifest.xml:24:9-44
+28
+29    <uses-permission android:name="com.vasil.sensorlogger.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" />
+29-->[androidx.core:core:1.12.0] /home/vasil/.gradle/caches/8.13/transforms/fec989fa26f3421bac7a449948eaa348/transformed/core-1.12.0/AndroidManifest.xml:26:5-97
+29-->[androidx.core:core:1.12.0] /home/vasil/.gradle/caches/8.13/transforms/fec989fa26f3421bac7a449948eaa348/transformed/core-1.12.0/AndroidManifest.xml:26:22-94
+30
+31    <application
+31-->/home/vasil/Projects/WayTrace/app/src/main/AndroidManifest.xml:12:5-28:19
+32        android:allowBackup="true"
+32-->/home/vasil/Projects/WayTrace/app/src/main/AndroidManifest.xml:13:9-35
+33        android:appComponentFactory="androidx.core.app.CoreComponentFactory"
+33-->[androidx.core:core:1.12.0] /home/vasil/.gradle/caches/8.13/transforms/fec989fa26f3421bac7a449948eaa348/transformed/core-1.12.0/AndroidManifest.xml:28:18-86
+34        android:debuggable="true"
+35        android:extractNativeLibs="false"
+36        android:label="WayTrace"
+36-->/home/vasil/Projects/WayTrace/app/src/main/AndroidManifest.xml:14:9-33
+37        android:theme="@style/Theme.AppCompat.DayNight.NoActionBar" >
+37-->/home/vasil/Projects/WayTrace/app/src/main/AndroidManifest.xml:15:9-68
+38        <activity
+38-->/home/vasil/Projects/WayTrace/app/src/main/AndroidManifest.xml:17:9-26:20
+39            android:name="com.vasil.sensorlogger.MainActivity"
+39-->/home/vasil/Projects/WayTrace/app/src/main/AndroidManifest.xml:18:13-41
+40            android:exported="true"
+40-->/home/vasil/Projects/WayTrace/app/src/main/AndroidManifest.xml:19:13-36
+41            android:screenOrientation="portrait"
+41-->/home/vasil/Projects/WayTrace/app/src/main/AndroidManifest.xml:20:13-49
+42            android:windowSoftInputMode="stateHidden" >
+42-->/home/vasil/Projects/WayTrace/app/src/main/AndroidManifest.xml:21:13-54
+43            <intent-filter>
+43-->/home/vasil/Projects/WayTrace/app/src/main/AndroidManifest.xml:22:13-25:29
+44                <action android:name="android.intent.action.MAIN" />
+44-->/home/vasil/Projects/WayTrace/app/src/main/AndroidManifest.xml:23:17-69
+44-->/home/vasil/Projects/WayTrace/app/src/main/AndroidManifest.xml:23:25-66
+45
+46                <category android:name="android.intent.category.LAUNCHER" />
+46-->/home/vasil/Projects/WayTrace/app/src/main/AndroidManifest.xml:24:17-77
+46-->/home/vasil/Projects/WayTrace/app/src/main/AndroidManifest.xml:24:27-74
+47            </intent-filter>
+48        </activity>
+49
+50        <provider
+50-->[androidx.emoji2:emoji2:1.2.0] /home/vasil/.gradle/caches/8.13/transforms/7ba7efa82e8853bc98577f43219e2cba/transformed/jetified-emoji2-1.2.0/AndroidManifest.xml:24:9-32:20
+51            android:name="androidx.startup.InitializationProvider"
+51-->[androidx.emoji2:emoji2:1.2.0] /home/vasil/.gradle/caches/8.13/transforms/7ba7efa82e8853bc98577f43219e2cba/transformed/jetified-emoji2-1.2.0/AndroidManifest.xml:25:13-67
+52            android:authorities="com.vasil.sensorlogger.androidx-startup"
+52-->[androidx.emoji2:emoji2:1.2.0] /home/vasil/.gradle/caches/8.13/transforms/7ba7efa82e8853bc98577f43219e2cba/transformed/jetified-emoji2-1.2.0/AndroidManifest.xml:26:13-68
+53            android:exported="false" >
+53-->[androidx.emoji2:emoji2:1.2.0] /home/vasil/.gradle/caches/8.13/transforms/7ba7efa82e8853bc98577f43219e2cba/transformed/jetified-emoji2-1.2.0/AndroidManifest.xml:27:13-37
+54            <meta-data
+54-->[androidx.emoji2:emoji2:1.2.0] /home/vasil/.gradle/caches/8.13/transforms/7ba7efa82e8853bc98577f43219e2cba/transformed/jetified-emoji2-1.2.0/AndroidManifest.xml:29:13-31:52
+55                android:name="androidx.emoji2.text.EmojiCompatInitializer"
+55-->[androidx.emoji2:emoji2:1.2.0] /home/vasil/.gradle/caches/8.13/transforms/7ba7efa82e8853bc98577f43219e2cba/transformed/jetified-emoji2-1.2.0/AndroidManifest.xml:30:17-75
+56                android:value="androidx.startup" />
+56-->[androidx.emoji2:emoji2:1.2.0] /home/vasil/.gradle/caches/8.13/transforms/7ba7efa82e8853bc98577f43219e2cba/transformed/jetified-emoji2-1.2.0/AndroidManifest.xml:31:17-49
+57            <meta-data
+57-->[androidx.lifecycle:lifecycle-process:2.4.1] /home/vasil/.gradle/caches/8.13/transforms/334d85a72e863eabb2a65fbdd95e3fa6/transformed/jetified-lifecycle-process-2.4.1/AndroidManifest.xml:31:13-33:52
+58                android:name="androidx.lifecycle.ProcessLifecycleInitializer"
+58-->[androidx.lifecycle:lifecycle-process:2.4.1] /home/vasil/.gradle/caches/8.13/transforms/334d85a72e863eabb2a65fbdd95e3fa6/transformed/jetified-lifecycle-process-2.4.1/AndroidManifest.xml:32:17-78
+59                android:value="androidx.startup" />
+59-->[androidx.lifecycle:lifecycle-process:2.4.1] /home/vasil/.gradle/caches/8.13/transforms/334d85a72e863eabb2a65fbdd95e3fa6/transformed/jetified-lifecycle-process-2.4.1/AndroidManifest.xml:33:17-49
+60        </provider>
+61    </application>
+62
+63</manifest>
