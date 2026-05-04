@@ -18,6 +18,16 @@ import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.camera.core.CameraSelector
+import androidx.camera.core.Preview
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.video.FileOutputOptions
+import androidx.camera.video.Quality
+import androidx.camera.video.QualitySelector
+import androidx.camera.video.Recorder
+import androidx.camera.video.Recording
+import androidx.camera.video.VideoCapture
+import androidx.camera.view.PreviewView
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import java.io.BufferedWriter
@@ -57,6 +67,11 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private var elapsedMs = 0L
     private var startDisplayTime = ""
 
+    // CameraX
+    private lateinit var previewView: PreviewView
+    private var videoCapture: VideoCapture<Recorder>? = null
+    private var activeRecording: Recording? = null
+
     private val timerHandler = Handler(Looper.getMainLooper())
     private val timerRunnable = object : Runnable {
         override fun run() {
@@ -76,6 +91,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
     companion object {
         private const val REQUEST_STORAGE = 1001
+        private const val REQUEST_CAMERA = 1002
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -88,6 +104,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         btnPrimary = findViewById(R.id.btnPrimary)
         btnStop = findViewById(R.id.btnStop)
         tvStats = findViewById(R.id.tvStats)
+        previewView = findViewById(R.id.previewView)
 
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
         accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
@@ -95,7 +112,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
         btnPrimary.setOnClickListener {
             when (state) {
-                RecordingState.READY, RecordingState.STOPPED -> requestStorageAndStart()
+                RecordingState.READY, RecordingState.STOPPED -> requestPermissionsAndStart()
                 RecordingState.RECORDING -> pauseRecording()
                 RecordingState.PAUSED -> resumeRecording()
             }
@@ -103,21 +120,55 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
         btnStop.setOnClickListener { stopRecording() }
 
+        setupCamera()
         updateUI()
     }
 
-    private fun requestStorageAndStart() {
-        // Android 10+ does not need WRITE_EXTERNAL_STORAGE to write to Downloads
-        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE)
-                != PackageManager.PERMISSION_GRANTED) {
-                ActivityCompat.requestPermissions(
-                    this,
-                    arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE),
-                    REQUEST_STORAGE
-                )
-                return
+    private fun setupCamera() {
+        val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
+        cameraProviderFuture.addListener({
+            val cameraProvider = cameraProviderFuture.get()
+
+            val preview = Preview.Builder().build().also {
+                it.setSurfaceProvider(previewView.surfaceProvider)
             }
+
+            val recorder = Recorder.Builder()
+                .setQualitySelector(QualitySelector.from(Quality.HD))
+                .build()
+            videoCapture = VideoCapture.withOutput(recorder)
+
+            try {
+                cameraProvider.unbindAll()
+                cameraProvider.bindToLifecycle(
+                    this,
+                    CameraSelector.DEFAULT_BACK_CAMERA,
+                    preview,
+                    videoCapture
+                )
+            } catch (e: Exception) {
+                Toast.makeText(this, "Camera setup failed: ${e.message}", Toast.LENGTH_LONG).show()
+            }
+        }, ContextCompat.getMainExecutor(this))
+    }
+
+    private fun requestPermissionsAndStart() {
+        // Check storage permission (Android 9 and below only)
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE)
+            != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(
+                this, arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE), REQUEST_STORAGE
+            )
+            return
+        }
+        // Check camera permission
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+            != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(
+                this, arrayOf(Manifest.permission.CAMERA), REQUEST_CAMERA
+            )
+            return
         }
         startRecording()
     }
@@ -126,11 +177,21 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         requestCode: Int, permissions: Array<out String>, grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == REQUEST_STORAGE) {
-            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                startRecording()
-            } else {
-                Toast.makeText(this, "Storage permission required to save CSV", Toast.LENGTH_LONG).show()
+        when (requestCode) {
+            REQUEST_STORAGE -> {
+                if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                    requestPermissionsAndStart()
+                } else {
+                    Toast.makeText(this, "Storage permission required", Toast.LENGTH_LONG).show()
+                }
+            }
+            REQUEST_CAMERA -> {
+                if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                    setupCamera()
+                    startRecording()
+                } else {
+                    Toast.makeText(this, "Camera permission required for video", Toast.LENGTH_LONG).show()
+                }
             }
         }
     }
@@ -140,13 +201,22 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             val now = Date()
             val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(now)
             startDisplayTime = SimpleDateFormat("HH:mm", Locale.getDefault()).format(now)
-            val fileName = "sensors_$timestamp.csv"
 
             val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
             downloadsDir.mkdirs()
-            currentFile = File(downloadsDir, fileName)
-            writer = BufferedWriter(FileWriter(currentFile!!))
+
+            // Start CSV
+            val csvFile = File(downloadsDir, "sensors_$timestamp.csv")
+            currentFile = csvFile
+            writer = BufferedWriter(FileWriter(csvFile))
             writer!!.write("timestamp_ms,sensor,x,y,z,event\n")
+
+            // Start video
+            val videoFile = File(downloadsDir, "sensors_$timestamp.mp4")
+            val outputOptions = FileOutputOptions.Builder(videoFile).build()
+            activeRecording = videoCapture?.output
+                ?.prepareRecording(this, outputOptions)
+                ?.start(ContextCompat.getMainExecutor(this)) {}
 
             bumpCount = 0
             maxMagnitude = 0f
@@ -168,6 +238,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         sensorManager.unregisterListener(this)
         elapsedMs = System.currentTimeMillis() - startTimeMs
         timerHandler.removeCallbacks(timerRunnable)
+        activeRecording?.pause()
         state = RecordingState.PAUSED
         updateUI()
     }
@@ -175,6 +246,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private fun resumeRecording() {
         startTimeMs = System.currentTimeMillis() - elapsedMs
         registerSensors()
+        activeRecording?.resume()
         state = RecordingState.RECORDING
         updateUI()
         timerHandler.post(timerRunnable)
@@ -189,6 +261,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         writer?.flush()
         writer?.close()
         writer = null
+        activeRecording?.stop()
+        activeRecording = null
         state = RecordingState.STOPPED
         updateUI()
     }
@@ -279,21 +353,21 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                 btnStop.visibility = View.GONE
                 tvStats.visibility = View.GONE
                 btnPrimary.text = "START"
-                btnPrimary.setBackgroundColor(0xFF007700.toInt())
+                btnPrimary.setBackgroundColor(0xCC007700.toInt())
             }
             RecordingState.RECORDING -> {
                 tvTimer.visibility = View.VISIBLE
                 btnStop.visibility = View.VISIBLE
                 tvStats.visibility = View.VISIBLE
                 btnPrimary.text = "PAUSE"
-                btnPrimary.setBackgroundColor(0xFFCC0000.toInt())
+                btnPrimary.setBackgroundColor(0xCCCC0000.toInt())
             }
             RecordingState.PAUSED -> {
                 tvTimer.visibility = View.VISIBLE
                 btnStop.visibility = View.VISIBLE
                 tvStats.visibility = View.VISIBLE
                 btnPrimary.text = "RESUME"
-                btnPrimary.setBackgroundColor(0xFF007700.toInt())
+                btnPrimary.setBackgroundColor(0xCC007700.toInt())
             }
             RecordingState.STOPPED -> {
                 tvTimer.visibility = View.GONE
@@ -301,7 +375,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                 tvStats.visibility = View.VISIBLE
                 tvStats.text = buildStatsLine()
                 btnPrimary.text = "START"
-                btnPrimary.setBackgroundColor(0xFF007700.toInt())
+                btnPrimary.setBackgroundColor(0xCC007700.toInt())
             }
         }
     }
