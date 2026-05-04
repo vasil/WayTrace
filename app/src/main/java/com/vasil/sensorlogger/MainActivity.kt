@@ -1,10 +1,13 @@
 package com.vasil.sensorlogger
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.os.Handler
@@ -13,7 +16,10 @@ import android.view.View
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import java.io.BufferedWriter
 import java.io.File
 import java.io.FileWriter
@@ -39,14 +45,12 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private var lastAccelTime = 0L
     private var lastGyroTime = 0L
 
-    // Event cooldowns (500ms per event type)
     private val EVENT_COOLDOWN_NS = 500_000_000L
     private var lastBumpTime = 0L
     private var lastFallTime = 0L
     private var lastWheelieTime = 0L
     private var lastTiltTime = 0L
 
-    // Session stats
     private var bumpCount = 0
     private var maxMagnitude = 0f
     private var startTimeMs = 0L
@@ -70,6 +74,10 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private lateinit var btnStop: Button
     private lateinit var tvStats: TextView
 
+    companion object {
+        private const val REQUEST_STORAGE = 1001
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -87,7 +95,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
         btnPrimary.setOnClickListener {
             when (state) {
-                RecordingState.READY, RecordingState.STOPPED -> startRecording()
+                RecordingState.READY, RecordingState.STOPPED -> requestStorageAndStart()
                 RecordingState.RECORDING -> pauseRecording()
                 RecordingState.PAUSED -> resumeRecording()
             }
@@ -98,29 +106,62 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         updateUI()
     }
 
+    private fun requestStorageAndStart() {
+        // Android 10+ does not need WRITE_EXTERNAL_STORAGE to write to Downloads
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                != PackageManager.PERMISSION_GRANTED) {
+                ActivityCompat.requestPermissions(
+                    this,
+                    arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE),
+                    REQUEST_STORAGE
+                )
+                return
+            }
+        }
+        startRecording()
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int, permissions: Array<out String>, grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_STORAGE) {
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                startRecording()
+            } else {
+                Toast.makeText(this, "Storage permission required to save CSV", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
     private fun startRecording() {
-        val now = Date()
-        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(now)
-        startDisplayTime = SimpleDateFormat("HH:mm", Locale.getDefault()).format(now)
-        val fileName = "sensors_$timestamp.csv"
+        try {
+            val now = Date()
+            val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(now)
+            startDisplayTime = SimpleDateFormat("HH:mm", Locale.getDefault()).format(now)
+            val fileName = "sensors_$timestamp.csv"
 
-        val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-        downloadsDir.mkdirs()
-        currentFile = File(downloadsDir, fileName)
-        writer = BufferedWriter(FileWriter(currentFile!!))
-        writer!!.write("timestamp_ms,sensor,x,y,z,event\n")
+            val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            downloadsDir.mkdirs()
+            currentFile = File(downloadsDir, fileName)
+            writer = BufferedWriter(FileWriter(currentFile!!))
+            writer!!.write("timestamp_ms,sensor,x,y,z,event\n")
 
-        bumpCount = 0
-        maxMagnitude = 0f
-        lastAccelTime = 0L
-        lastGyroTime = 0L
-        startTimeMs = System.currentTimeMillis()
-        elapsedMs = 0L
+            bumpCount = 0
+            maxMagnitude = 0f
+            lastAccelTime = 0L
+            lastGyroTime = 0L
+            startTimeMs = System.currentTimeMillis()
+            elapsedMs = 0L
 
-        registerSensors()
-        state = RecordingState.RECORDING
-        updateUI()
-        timerHandler.post(timerRunnable)
+            registerSensors()
+            state = RecordingState.RECORDING
+            updateUI()
+            timerHandler.post(timerRunnable)
+        } catch (e: Exception) {
+            Toast.makeText(this, "Failed to start: ${e.message}", Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun pauseRecording() {
@@ -167,9 +208,11 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                 lastAccelTime = nowNs
                 val eventTag = detectAccelEvent(nowNs, event.values)
                 if (eventTag == "bump") bumpCount++
-                val mag = sqrt(event.values[0] * event.values[0] +
-                        event.values[1] * event.values[1] +
-                        event.values[2] * event.values[2])
+                val mag = sqrt(
+                    event.values[0] * event.values[0] +
+                    event.values[1] * event.values[1] +
+                    event.values[2] * event.values[2]
+                )
                 if (mag > maxMagnitude) maxMagnitude = mag
                 writeLine(nowNs, "accel", event.values, eventTag)
             }
