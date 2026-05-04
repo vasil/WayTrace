@@ -1,80 +1,31 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.constraintlayout.widget.ConstraintLayout
+<LinearLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#000000">
-
-    <TextView
-        android:id="@+id/tvAppName"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="WayTrace"
-        android:textColor="#888888"
-        android:textSize="14sp"
-        android:letterSpacing="0.15"
-        app:layout_constraintTop_toTopOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginTop="32dp" />
-
-    <TextView
-        android:id="@+id/tvTimer"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="00:00:00"
-        android:textColor="#FFFFFF"
-        android:textSize="48sp"
-        android:fontFamily="monospace"
-        android:visibility="gone"
-        app:layout_constraintTop_toBottomOf="@id/tvAppName"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginTop="24dp" />
+    android:orientation="vertical"
+    android:gravity="center"
+    android:padding="32dp"
+    android:background="#111111">
 
     <Button
-        android:id="@+id/btnPrimary"
+        android:id="@+id/btnToggle"
         android:layout_width="220dp"
         android:layout_height="220dp"
         android:text="START"
         android:textSize="28sp"
         android:textColor="#FFFFFF"
         android:textStyle="bold"
-        android:backgroundTint="#007700"
-        app:layout_constraintTop_toTopOf="parent"
-        app:layout_constraintBottom_toTopOf="@id/btnStop"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent" />
-
-    <Button
-        android:id="@+id/btnStop"
-        android:layout_width="140dp"
-        android:layout_height="56dp"
-        android:text="STOP"
-        android:textSize="16sp"
-        android:textColor="#FFFFFF"
-        android:textStyle="bold"
-        android:backgroundTint="#444444"
-        android:visibility="gone"
-        app:layout_constraintTop_toBottomOf="@id/btnPrimary"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintBottom_toTopOf="@id/tvStats"
-        android:layout_marginTop="24dp" />
+        android:backgroundTint="#007700" />
 
     <TextView
-        android:id="@+id/tvStats"
+        android:id="@+id/tvStatus"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text=""
+        android:layout_marginTop="32dp"
+        android:text="Ready"
         android:textColor="#AAAAAA"
         android:textSize="13sp"
-        android:gravity="center"
-        android:visibility="gone"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginBottom="40dp" />
+        android:gravity="center" />
 
-</androidx.constraintlayout.widget.ConstraintLayout>
+</LinearLayout>
