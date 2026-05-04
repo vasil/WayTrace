@@ -6,7 +6,6 @@ import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.os.Bundle
-import android.view.WindowManager
 import android.widget.Button
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
@@ -22,55 +21,48 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private lateinit var sensorManager: SensorManager
     private var accelerometer: Sensor? = null
     private var gyroscope: Sensor? = null
-
     private var isRecording = false
     private var writer: BufferedWriter? = null
-
-    private val INTERVAL_NS = 100_000_000L  // 10 Hz
+    private var currentFile: File? = null
+    private val INTERVAL_NS = 100_000_000L
     private var lastAccelTime = 0L
     private var lastGyroTime = 0L
-
     private lateinit var btnToggle: Button
     private lateinit var tvStatus: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContentView(R.layout.activity_main)
-
         btnToggle = findViewById(R.id.btnToggle)
         tvStatus = findViewById(R.id.tvStatus)
-
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
         accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         gyroscope = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
-
         btnToggle.setOnClickListener {
             if (isRecording) stopRecording() else startRecording()
         }
     }
 
     private fun startRecording() {
-        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
-        val fileName = "sensors_$timestamp.csv"
-
-        // App-private external storage — no permissions needed on any Android version
-        val dir = getExternalFilesDir(null) ?: filesDir
-        val file = File(dir, fileName)
-
-        writer = BufferedWriter(FileWriter(file))
-        writer!!.write("timestamp_ms,sensor,x,y,z\n")
-
-        lastAccelTime = 0L
-        lastGyroTime = 0L
-
-        sensorManager.registerListener(this, accelerometer, SensorManager.SENSOR_DELAY_FASTEST)
-        sensorManager.registerListener(this, gyroscope, SensorManager.SENSOR_DELAY_FASTEST)
-
-        isRecording = true
-        btnToggle.text = "STOP"
-        btnToggle.setBackgroundColor(0xFFCC0000.toInt())
-        tvStatus.text = "Recording → $fileName\nLocation: Android/data/com.vasil.sensorlogger/files/"
+        try {
+            val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
+            val fileName = "sensors_$timestamp.csv"
+            val dir = getExternalFilesDir(null)
+            dir?.mkdirs()
+            currentFile = File(dir, fileName)
+            writer = BufferedWriter(FileWriter(currentFile!!))
+            writer!!.write("timestamp_ms,sensor,x,y,z\n")
+            lastAccelTime = 0L
+            lastGyroTime = 0L
+            val result1 = sensorManager.registerListener(this, accelerometer, SensorManager.SENSOR_DELAY_GAME)
+            val result2 = sensorManager.registerListener(this, gyroscope, SensorManager.SENSOR_DELAY_GAME)
+            isRecording = true
+            btnToggle.text = "STOP"
+            btnToggle.setBackgroundColor(0xFFCC0000.toInt())
+            tvStatus.text = "Recording: $fileName\nAccel:$result1 Gyro:$result2"
+        } catch (e: Exception) {
+            tvStatus.text = "Error: ${e.message}"
+        }
     }
 
     private fun stopRecording() {
@@ -78,17 +70,14 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         writer?.flush()
         writer?.close()
         writer = null
-
         isRecording = false
         btnToggle.text = "START"
         btnToggle.setBackgroundColor(0xFF007700.toInt())
-        tvStatus.text = "Saved. Find file in:\nAndroid/data/com.vasil.sensorlogger/files/"
+        tvStatus.text = "Saved: ${currentFile?.absolutePath}"
     }
 
     override fun onSensorChanged(event: SensorEvent) {
-        if (!isRecording) return
         val nowNs = event.timestamp
-
         when (event.sensor.type) {
             Sensor.TYPE_ACCELEROMETER -> {
                 if (lastAccelTime != 0L && nowNs - lastAccelTime < INTERVAL_NS) return
@@ -103,13 +92,10 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         }
     }
 
-    private fun writeLine(timestampNs: Long, sensor: String, v: FloatArray) {
+    private fun writeLine(timestampNs: Long, sensor: String, values: FloatArray) {
         val ms = timestampNs / 1_000_000L
-        try {
-            writer?.write("$ms,$sensor,${v[0]},${v[1]},${v[2]}\n")
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
+        try { writer?.write("$ms,$sensor,${values[0]},${values[1]},${values[2]}\n") }
+        catch (e: Exception) { e.printStackTrace() }
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
