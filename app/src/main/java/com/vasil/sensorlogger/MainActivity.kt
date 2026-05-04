@@ -94,8 +94,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(now)
             startDisplayTime = SimpleDateFormat("HH:mm", Locale.getDefault()).format(now)
 
-            val dir = getExternalFilesDir(null)
-            dir?.mkdirs()
+            val dir = android.os.Environment.getExternalStoragePublicDirectory(
+                android.os.Environment.DIRECTORY_DOWNLOADS)
+            dir.mkdirs()
             currentFile = File(dir, "sensors_$timestamp.csv")
 
             // auto-flush=true: every println() writes to disk immediately — no data loss
