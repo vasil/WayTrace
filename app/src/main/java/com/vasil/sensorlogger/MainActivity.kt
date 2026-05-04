@@ -173,19 +173,24 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     }
 
     private fun detectAccelEvent(nowNs: Long, v: FloatArray, mag: Float): String {
+        // v[0]=X(forward), v[1]=Y(vertical/gravity), v[2]=Z(lateral)
         if (mag > 12.0f && nowNs - lastBumpTime > EVENT_COOLDOWN_NS) {
             lastBumpTime = nowNs; return "bump"
         }
-        if (v[2] > 15.0f && nowNs - lastFallTime > EVENT_COOLDOWN_NS) {
+        // Fall: sudden negative Y spike (hard downward impact drops gravity reading)
+        if (v[1] < -15.0f && nowNs - lastFallTime > EVENT_COOLDOWN_NS) {
             lastFallTime = nowNs; return "fall"
         }
         return ""
     }
 
     private fun detectGyroEvent(nowNs: Long, v: FloatArray): String {
-        if (abs(v[1]) > 3.0f && nowNs - lastWheelieTime > EVENT_COOLDOWN_NS) {
+        // v[0]=X(roll/tilt), v[1]=Y(yaw/turn), v[2]=Z(pitch/wheelie)
+        // Wheelie: Z_gyro spike (pitch = forward/backward tipping)
+        if (abs(v[2]) > 3.0f && nowNs - lastWheelieTime > EVENT_COOLDOWN_NS) {
             lastWheelieTime = nowNs; return "wheelie"
         }
+        // Tilt: X_gyro spike (roll = sideways lean, tip-over risk)
         if (abs(v[0]) > 3.0f && nowNs - lastTiltTime > EVENT_COOLDOWN_NS) {
             lastTiltTime = nowNs; return "tilt"
         }
