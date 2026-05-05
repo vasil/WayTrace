@@ -37,12 +37,22 @@ from datetime import datetime
 # Z_gyro  = PITCH (wheelies)
 
 SAMPLE_RATE = 10.0  # Hz
+GRAVITY     = 9.81  # m/s²
 
-# ISO 2631-1 thresholds
+# ISO 2631-1 whole-body vibration health thresholds (RMS over session)
 RMS_COMFORTABLE    = 0.5   # m/s²
 RMS_UNCOMFORTABLE  = 1.15  # m/s²
-VDV_LOW            = 8.5   # m/s^1.75
-VDV_MODERATE       = 17.0  # m/s^1.75
+
+# ISO 2631-1 VDV thresholds
+VDV_LOW      = 8.5   # m/s^1.75
+VDV_MODERATE = 17.0  # m/s^1.75
+
+# ISO 2631-5 single-event shock thresholds (total magnitude, gravity included)
+# At rest the phone reads ~9.8 m/s². These thresholds represent excess above baseline:
+# BUMP_ISO:       15.0 m/s²  =  ~5.2 m/s² excess  =  ~0.53g  →  "quite uncomfortable" (ISO 2631-1)
+# HEAVY_BUMP_ISO: 20.0 m/s²  = ~10.2 m/s² excess  =  ~1.04g  →  clinically significant shock (ISO 2631-5)
+BUMP_ISO       = 15.0  # m/s²
+HEAVY_BUMP_ISO = 20.0  # m/s²
 
 # Jerk threshold for discrete obstacles
 JERK_OBSTACLE_THRESHOLD = 50.0  # m/s³
@@ -279,8 +289,9 @@ def plot_report(accel, freqs, psd, dom_band, band_power,
     ax5.set_facecolor(ax_style['facecolor'])
     ax5.axis('off')
 
-    bump_count = len(accel[accel['event'] == 'bump'])
-    tilt_count = len(accel[accel['event'].isin(['tilt', 'wheelie', 'fall'])])
+    bump_count       = len(accel[accel['event'] == 'bump'])
+    heavy_bump_count = len(accel[accel['event'] == 'heavy_bump'])
+    tilt_count       = len(accel[accel['event'].isin(['tilt', 'wheelie', 'fall'])])
 
     summary = [
         ['Metric', 'Value', '', 'Metric', 'Value'],
@@ -360,14 +371,28 @@ def main():
     iri, iri_condition, _               = compute_iri(accel)
     stats                               = compute_stats(accel)
 
-    bump_count = len(accel[accel['event'] == 'bump'])
+    # Count from logged labels (recorded by app)
+    bump_logged       = len(accel[accel['event'] == 'bump'])
+    heavy_bump_logged = len(accel[accel['event'] == 'heavy_bump'])
+
+    # Re-evaluate from raw magnitude using ISO thresholds (independent of app version)
+    mag = accel['magnitude'].values
+    bump_count       = int(np.sum(
+        (mag >= BUMP_ISO) & (mag < HEAVY_BUMP_ISO) &
+        (np.diff(np.concatenate([[0], (mag >= BUMP_ISO).astype(int)])) == 1)
+    ))
+    heavy_bump_count = int(np.sum(
+        (mag >= HEAVY_BUMP_ISO) &
+        (np.diff(np.concatenate([[0], (mag >= HEAVY_BUMP_ISO).astype(int)])) == 1)
+    ))
 
     # Console summary
     print(f"\nRMS           : {rms_full:.3f} m/s²")
     print(f"VDV           : {vdv:.2f} m/s^1.75  →  {vdv_risk} health risk")
     print(f"IRI estimate  : {iri:.1f} m/km  →  {iri_condition}")
     print(f"Dominant freq : {dom_band}")
-    print(f"Bumps logged  : {bump_count}")
+    print(f"Bumps ≥15 m/s² (ISO notable)   : {bump_count}  [logged by app: {bump_logged}]")
+    print(f"Heavy bumps ≥20 m/s² (ISO severe): {heavy_bump_count}  [logged by app: {heavy_bump_logged}]")
     print(f"Jerk obstacles: {len(obstacles)}")
     print(f"Max magnitude : {stats['max']:.2f} m/s²")
     print(f"p95 magnitude : {stats['p95']:.2f} m/s²")
@@ -380,6 +405,7 @@ def main():
         f"VDV: {vdv:.1f} ({vdv_risk}) | "
         f"IRI est: {iri:.1f} m/km | "
         f"Bumps: {bump_count} | "
+        f"Heavy bumps: {heavy_bump_count} | "
         f"Obstacles: {len(obstacles)}"
     )
     print(f"\n{log_line}")

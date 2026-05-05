@@ -185,7 +185,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                         event.values[2] * event.values[2])
                 if (mag > maxMagnitude) maxMagnitude = mag
                 val ev = detectAccelEvent(nowNs, event.values, mag)
-                if (ev == "bump") bumpCount++
+                if (ev == "bump" || ev == "heavy_bump") bumpCount++
                 writeLine(nowNs, "accel", event.values, ev)
             }
             Sensor.TYPE_GYROSCOPE -> {
@@ -197,7 +197,12 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     }
 
     private fun detectAccelEvent(nowNs: Long, v: FloatArray, mag: Float): String {
-        if (mag > 12.0f && nowNs - lastBumpTime > EVENT_COOLDOWN_NS) {
+        // ISO 2631-5: clinically significant single-event shock (≥1g above 9.8 baseline)
+        if (mag > 20.0f && nowNs - lastBumpTime > EVENT_COOLDOWN_NS) {
+            lastBumpTime = nowNs; return "heavy_bump"
+        }
+        // ISO 2631-1: "quite uncomfortable" single event (≥0.5g above 9.8 baseline)
+        if (mag > 15.0f && nowNs - lastBumpTime > EVENT_COOLDOWN_NS) {
             lastBumpTime = nowNs; return "bump"
         }
         if (v[1] < -15.0f && nowNs - lastFallTime > EVENT_COOLDOWN_NS) {
