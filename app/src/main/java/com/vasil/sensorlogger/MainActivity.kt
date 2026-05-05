@@ -1,8 +1,6 @@
 package com.vasil.sensorlogger
 
-import android.Manifest
 import android.content.Context
-import android.content.pm.PackageManager
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
@@ -17,16 +15,6 @@ import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import androidx.camera.core.CameraSelector
-import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.camera.video.FileOutputOptions
-import androidx.camera.video.Quality
-import androidx.camera.video.QualitySelector
-import androidx.camera.video.Recorder
-import androidx.camera.video.Recording
-import androidx.camera.video.VideoCapture
-import androidx.core.app.ActivityCompat
-import androidx.core.content.ContextCompat
 import java.io.File
 import java.io.FileWriter
 import java.io.PrintWriter
@@ -64,10 +52,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private var elapsedMs = 0L
     private var startDisplayTime = ""
 
-    // CameraX — initialised lazily after permission granted
-    private var videoCapture: VideoCapture<Recorder>? = null
-    private var activeRecording: Recording? = null
-    private var cameraReady = false
+    private var stopConfirmPending = false
+    private val stopConfirmHandler = Handler(Looper.getMainLooper())
 
     private val timerHandler = Handler(Looper.getMainLooper())
     private val timerRunnable = object : Runnable {
@@ -81,10 +67,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private lateinit var btnToggle: Button
     private lateinit var btnStop: Button
     private lateinit var tvStatus: TextView
-
-    companion object {
-        private const val REQUEST_CAMERA = 1001
-    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -101,64 +83,27 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
         btnToggle.setOnClickListener {
             when (state) {
-                RecordingState.READY, RecordingState.STOPPED -> requestCameraAndStart()
+                RecordingState.READY, RecordingState.STOPPED -> startRecording()
                 RecordingState.RECORDING -> pauseRecording()
                 RecordingState.PAUSED    -> resumeRecording()
             }
         }
-        btnStop.setOnClickListener { stopRecording() }
+        btnStop.setOnClickListener {
+            if (!stopConfirmPending) {
+                stopConfirmPending = true
+                btnStop.text = "SURE?"
+                stopConfirmHandler.postDelayed({
+                    stopConfirmPending = false
+                    btnStop.text = "STOP"
+                }, 3000)
+            } else {
+                stopConfirmHandler.removeCallbacksAndMessages(null)
+                stopConfirmPending = false
+                stopRecording()
+            }
+        }
 
         updateUI()
-    }
-
-    // ── Permission flow ────────────────────────────────────────────────────────
-
-    private fun requestCameraAndStart() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
-            != PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), REQUEST_CAMERA)
-            return
-        }
-        ensureCameraReadyThenStart()
-    }
-
-    override fun onRequestPermissionsResult(
-        requestCode: Int, permissions: Array<out String>, grantResults: IntArray
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == REQUEST_CAMERA) {
-            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                ensureCameraReadyThenStart()
-            } else {
-                Toast.makeText(this, "Camera permission denied — recording without video", Toast.LENGTH_LONG).show()
-                startRecording()   // still record sensors even without camera
-            }
-        }
-    }
-
-    // ── Camera setup ──────────────────────────────────────────────────────────
-
-    private fun ensureCameraReadyThenStart() {
-        if (cameraReady) {
-            startRecording()
-            return
-        }
-        val future = ProcessCameraProvider.getInstance(this)
-        future.addListener({
-            try {
-                val provider = future.get()
-                val recorder = Recorder.Builder()
-                    .setQualitySelector(QualitySelector.from(Quality.HD))
-                    .build()
-                videoCapture = VideoCapture.withOutput(recorder)
-                provider.unbindAll()
-                provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, videoCapture!!)
-                cameraReady = true
-            } catch (e: Exception) {
-                Toast.makeText(this, "Camera init failed: ${e.message}", Toast.LENGTH_LONG).show()
-            }
-            startRecording()   // start regardless — camera may or may not be ready
-        }, ContextCompat.getMainExecutor(this))
     }
 
     // ── Recording state machine ────────────────────────────────────────────────
@@ -172,19 +117,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
             dir.mkdirs()
 
-            // CSV
             currentFile = File(dir, "sensors_$timestamp.csv")
             writer = PrintWriter(FileWriter(currentFile!!), true)
             writer!!.println("timestamp_ms,sensor,x,y,z,event")
-
-            // Video (same timestamp prefix)
-            if (cameraReady && videoCapture != null) {
-                val videoFile = File(dir, "sensors_$timestamp.mp4")
-                val opts = FileOutputOptions.Builder(videoFile).build()
-                activeRecording = videoCapture!!.output
-                    .prepareRecording(this, opts)
-                    .start(ContextCompat.getMainExecutor(this)) {}
-            }
 
             bumpCount = 0
             maxMagnitude = 0f
@@ -207,7 +142,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         sensorManager.unregisterListener(this)
         timerHandler.removeCallbacks(timerRunnable)
         elapsedMs = System.currentTimeMillis() - startTimeMs
-        activeRecording?.pause()
         state = RecordingState.PAUSED
         updateUI()
     }
@@ -215,7 +149,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private fun resumeRecording() {
         startTimeMs = System.currentTimeMillis() - elapsedMs
         registerSensors()
-        activeRecording?.resume()
         state = RecordingState.RECORDING
         updateUI()
         timerHandler.post(timerRunnable)
@@ -227,8 +160,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         if (state == RecordingState.RECORDING) elapsedMs = System.currentTimeMillis() - startTimeMs
         writer?.close()
         writer = null
-        activeRecording?.stop()
-        activeRecording = null
+        stopConfirmPending = false
         state = RecordingState.STOPPED
         updateUI()
     }
@@ -265,7 +197,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     }
 
     private fun detectAccelEvent(nowNs: Long, v: FloatArray, mag: Float): String {
-        // v[0]=X(forward), v[1]=Y(vertical/gravity), v[2]=Z(lateral)
         if (mag > 12.0f && nowNs - lastBumpTime > EVENT_COOLDOWN_NS) {
             lastBumpTime = nowNs; return "bump"
         }
@@ -276,7 +207,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     }
 
     private fun detectGyroEvent(nowNs: Long, v: FloatArray): String {
-        // v[0]=X(roll/tilt), v[1]=Y(yaw/turn), v[2]=Z(pitch/wheelie)
         if (abs(v[2]) > 3.0f && nowNs - lastWheelieTime > EVENT_COOLDOWN_NS) {
             lastWheelieTime = nowNs; return "wheelie"
         }
@@ -295,31 +225,32 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private fun updateStats() {
         val s = elapsedMs / 1000
         val dur = "%02d:%02d".format((s % 3600) / 60, s % 60)
-        val video = if (cameraReady) " | 🎥" else ""
-        tvStatus.text = "Started: $startDisplayTime | Duration: $dur | Bumps: $bumpCount | Max: ${"%.1f".format(maxMagnitude)} m/s²$video"
+        tvStatus.text = "Started: $startDisplayTime | Duration: $dur | Bumps: $bumpCount | Max: ${"%.1f".format(maxMagnitude)} m/s²"
     }
 
     private fun updateUI() {
         when (state) {
             RecordingState.READY -> {
-                btnToggle.text = "START"; btnToggle.setBackgroundColor(0xFF007700.toInt())
+                btnToggle.text = "START"; btnToggle.setBackgroundColor(0xFF888888.toInt())
                 btnStop.visibility = View.GONE; tvStatus.text = "Ready"
             }
             RecordingState.RECORDING -> {
-                btnToggle.text = "PAUSE"; btnToggle.setBackgroundColor(0xFFCC0000.toInt())
+                btnToggle.text = "PAUSE"; btnToggle.setBackgroundColor(0xFF007700.toInt())
+                btnStop.text = "STOP"; btnStop.setBackgroundColor(0xFFCC0000.toInt())
                 btnStop.visibility = View.VISIBLE; updateStats()
             }
             RecordingState.PAUSED -> {
-                btnToggle.text = "RESUME"; btnToggle.setBackgroundColor(0xFF007700.toInt())
+                btnToggle.text = "RESUME"; btnToggle.setBackgroundColor(0xFFFF8800.toInt())
+                btnStop.text = "STOP"; btnStop.setBackgroundColor(0xFFCC0000.toInt())
                 btnStop.visibility = View.VISIBLE
             }
             RecordingState.STOPPED -> {
-                btnToggle.text = "START"; btnToggle.setBackgroundColor(0xFF007700.toInt())
+                btnToggle.text = "START"; btnToggle.setBackgroundColor(0xFF888888.toInt())
                 btnStop.visibility = View.GONE
                 val s = elapsedMs / 1000
                 val dur = "%02d:%02d".format((s % 3600) / 60, s % 60)
-                val video = if (cameraReady) " + MP4" else ""
-                tvStatus.text = "Saved | $startDisplayTime | $dur | Bumps: $bumpCount | Max: ${"%.1f".format(maxMagnitude)} m/s²$video"
+                val sizeKb = (currentFile?.length() ?: 0L) / 1024
+                tvStatus.text = "${currentFile?.name}\n$dur | Bumps: $bumpCount | Max: ${"%.1f".format(maxMagnitude)} m/s² | ${sizeKb}KB"
             }
         }
     }
