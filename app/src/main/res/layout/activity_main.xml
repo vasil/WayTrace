@@ -16,7 +16,7 @@
         android:textSize="28sp"
         android:textColor="#FFFFFF"
         android:textStyle="bold"
-        android:backgroundTint="#007700" />
+        android:backgroundTint="#888888" />
 
     <Button
         android:id="@+id/btnStop"
@@ -27,7 +27,7 @@
         android:textSize="16sp"
         android:textColor="#FFFFFF"
         android:textStyle="bold"
-        android:backgroundTint="#444444"
+        android:backgroundTint="#CC0000"
         android:visibility="gone" />
 
     <TextView
