@@ -15,8 +15,6 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
-import android.location.Location
-import android.location.LocationListener
 import android.location.LocationManager
 import android.os.Binder
 import android.os.Environment
@@ -77,13 +75,6 @@ class RecorderService : Service(), SensorEventListener {
         private set
     private var startTimeMs = 0L
 
-    private var lastLat = ""
-    private var lastLon = ""
-    private var locationManager: LocationManager? = null
-    private val locationListener = LocationListener { loc ->
-        lastLat = "%.7f".format(loc.latitude)
-        lastLon = "%.7f".format(loc.longitude)
-    }
 
     private val timerHandler = Handler(Looper.getMainLooper())
     private val timerRunnable = object : Runnable {
@@ -213,11 +204,9 @@ class RecorderService : Service(), SensorEventListener {
 
             bumpCount = 0; maxMagnitude = 0f; pinpointCount = 0
             lastAccelTime = 0L; lastGyroTime = 0L
-            lastLat = ""; lastLon = ""
             startTimeMs = System.currentTimeMillis(); elapsedMs = 0L
 
             registerSensors()
-            registerGps()
             state = RecordingState.RECORDING
             startForeground(NOTIF_ID, buildNotification())
             timerHandler.post(timerRunnable)
@@ -227,7 +216,6 @@ class RecorderService : Service(), SensorEventListener {
 
     fun pauseRecording() {
         sensorManager.unregisterListener(this)
-        unregisterGps()
         timerHandler.removeCallbacks(timerRunnable)
         elapsedMs = System.currentTimeMillis() - startTimeMs
         state = RecordingState.PAUSED
@@ -238,7 +226,6 @@ class RecorderService : Service(), SensorEventListener {
     fun resumeRecording() {
         startTimeMs = System.currentTimeMillis() - elapsedMs
         registerSensors()
-        registerGps()
         state = RecordingState.RECORDING
         updateNotification()
         timerHandler.post(timerRunnable)
@@ -247,7 +234,6 @@ class RecorderService : Service(), SensorEventListener {
 
     fun stopRecording() {
         sensorManager.unregisterListener(this)
-        unregisterGps()
         timerHandler.removeCallbacks(timerRunnable)
         if (state == RecordingState.RECORDING) elapsedMs = System.currentTimeMillis() - startTimeMs
         writer?.close(); writer = null
@@ -257,24 +243,6 @@ class RecorderService : Service(), SensorEventListener {
         onStateChanged?.invoke()
     }
 
-    private fun registerGps() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
-            != PackageManager.PERMISSION_GRANTED) return
-        try {
-            locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
-            locationManager?.requestLocationUpdates(
-                LocationManager.GPS_PROVIDER, 1000L, 0f, locationListener)
-            // Seed with last known so we have a value immediately
-            locationManager?.getLastKnownLocation(LocationManager.GPS_PROVIDER)
-                ?.let { locationListener.onLocationChanged(it) }
-                ?: locationManager?.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
-                    ?.let { locationListener.onLocationChanged(it) }
-        } catch (_: Exception) {}
-    }
-
-    private fun unregisterGps() {
-        try { locationManager?.removeUpdates(locationListener) } catch (_: Exception) {}
-    }
 
     fun pinpoint() {
         if (state != RecordingState.RECORDING && state != RecordingState.PAUSED) return
@@ -320,13 +288,13 @@ class RecorderService : Service(), SensorEventListener {
                 if (mag > maxMagnitude) maxMagnitude = mag
                 val ev = detectAccelEvent(nowNs, event.values, mag)
                 if (ev == "bump" || ev == "heavy_bump") bumpCount++
-                writer?.println("${nowNs / 1_000_000L},accel,${event.values[0]},${event.values[1]},${event.values[2]},$ev,$lastLat,$lastLon")
+                writer?.println("${nowNs / 1_000_000L},accel,${event.values[0]},${event.values[1]},${event.values[2]},$ev,,")
             }
             Sensor.TYPE_GYROSCOPE -> {
                 if (lastGyroTime != 0L && nowNs - lastGyroTime < INTERVAL_NS) return
                 lastGyroTime = nowNs
                 val ev = detectGyroEvent(nowNs, event.values)
-                writer?.println("${nowNs / 1_000_000L},gyro,${event.values[0]},${event.values[1]},${event.values[2]},$ev,$lastLat,$lastLon")
+                writer?.println("${nowNs / 1_000_000L},gyro,${event.values[0]},${event.values[1]},${event.values[2]},$ev,,")
             }
         }
     }
