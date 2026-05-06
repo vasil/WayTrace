@@ -53,7 +53,7 @@ class RecorderService : Service(), SensorEventListener {
     var currentFile: File? = null
         private set
 
-    private val INTERVAL_NS = 100_000_000L
+    private val INTERVAL_NS = 8_333_333L  // 120 Hz
     private var lastAccelTime = 0L
     private var lastGyroTime = 0L
 
@@ -269,8 +269,9 @@ class RecorderService : Service(), SensorEventListener {
     }
 
     private fun registerSensors() {
-        sensorManager.registerListener(this, accelerometer, SensorManager.SENSOR_DELAY_GAME)
-        sensorManager.registerListener(this, gyroscope,     SensorManager.SENSOR_DELAY_GAME)
+        // 8333 µs = 120 Hz
+        sensorManager.registerListener(this, accelerometer, 8333)
+        sensorManager.registerListener(this, gyroscope,     8333)
     }
 
     // ── Sensor events ─────────────────────────────────────────────────────────
