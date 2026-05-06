@@ -1,6 +1,5 @@
 package com.vasil.sensorlogger
 
-import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -10,12 +9,10 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.content.pm.PackageManager
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
-import android.location.LocationManager
 import android.os.Binder
 import android.os.Environment
 import android.os.Handler
@@ -23,7 +20,6 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
-import androidx.core.content.ContextCompat
 import java.io.File
 import java.io.FileWriter
 import java.io.PrintWriter
@@ -200,7 +196,7 @@ class RecorderService : Service(), SensorEventListener {
             dir.mkdirs()
             currentFile = File(dir, "WT_${ts}_CSV.csv")
             writer = PrintWriter(FileWriter(currentFile!!), true)
-            writer!!.println("timestamp_ms,sensor,x,y,z,event,lat,lon")
+            writer!!.println("timestamp_ms,sensor,x,y,z,event")
 
             bumpCount = 0; maxMagnitude = 0f; pinpointCount = 0
             lastAccelTime = 0L; lastGyroTime = 0L
@@ -248,22 +244,7 @@ class RecorderService : Service(), SensorEventListener {
         if (state != RecordingState.RECORDING && state != RecordingState.PAUSED) return
         pinpointCount++
         val tsMs = SystemClock.elapsedRealtime()
-
-        var lat = ""; var lon = ""
-        try {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
-                == PackageManager.PERMISSION_GRANTED) {
-                val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
-                val loc = lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)
-                    ?: lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
-                if (loc != null) {
-                    lat = "%.7f".format(loc.latitude)
-                    lon = "%.7f".format(loc.longitude)
-                }
-            }
-        } catch (_: Exception) {}
-
-        writer?.println("$tsMs,pinpoint,0.0,0.0,0.0,pinpoint_$pinpointCount,$lat,$lon")
+        writer?.println("$tsMs,pinpoint,0.0,0.0,0.0,pinpoint_$pinpointCount")
         updateNotification()
         onStateChanged?.invoke()
     }
@@ -289,13 +270,13 @@ class RecorderService : Service(), SensorEventListener {
                 if (mag > maxMagnitude) maxMagnitude = mag
                 val ev = detectAccelEvent(nowNs, event.values, mag)
                 if (ev == "bump" || ev == "heavy_bump") bumpCount++
-                writer?.println("${nowNs / 1_000_000L},accel,${event.values[0]},${event.values[1]},${event.values[2]},$ev,,")
+                writer?.println("${nowNs / 1_000_000L},accel,${event.values[0]},${event.values[1]},${event.values[2]},$ev")
             }
             Sensor.TYPE_GYROSCOPE -> {
                 if (lastGyroTime != 0L && nowNs - lastGyroTime < INTERVAL_NS) return
                 lastGyroTime = nowNs
                 val ev = detectGyroEvent(nowNs, event.values)
-                writer?.println("${nowNs / 1_000_000L},gyro,${event.values[0]},${event.values[1]},${event.values[2]},$ev,,")
+                writer?.println("${nowNs / 1_000_000L},gyro,${event.values[0]},${event.values[1]},${event.values[2]},$ev")
             }
         }
     }

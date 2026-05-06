@@ -1,12 +1,10 @@
 package com.vasil.sensorlogger
 
-import android.Manifest
 import android.app.AlertDialog
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
-import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.os.Bundle
 import android.os.Handler
@@ -17,8 +15,6 @@ import android.view.WindowManager
 import android.widget.Button
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.app.ActivityCompat
-import androidx.core.content.ContextCompat
 
 class MainActivity : AppCompatActivity() {
 
@@ -57,7 +53,6 @@ class MainActivity : AppCompatActivity() {
             val svc = service ?: return@setOnClickListener
             when (svc.state) {
                 RecordingState.READY, RecordingState.STOPPED -> {
-                    requestLocationPermissionIfNeeded()
                     startService(Intent(this, RecorderService::class.java))
                     svc.startRecording()
                 }
@@ -106,14 +101,6 @@ class MainActivity : AppCompatActivity() {
             .setPositiveButton("Stop") { _, _ -> service?.stopRecording() }
             .setNegativeButton("Cancel", null)
             .show()
-    }
-
-    private fun requestLocationPermissionIfNeeded() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
-            != PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(this,
-                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION), 2001)
-        }
     }
 
     override fun onDestroy() {
