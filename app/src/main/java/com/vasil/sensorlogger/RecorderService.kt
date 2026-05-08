@@ -18,6 +18,7 @@ import android.os.Environment
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import java.io.File
@@ -37,6 +38,39 @@ class RecorderService : Service(), SensorEventListener {
 
     private val binder = LocalBinder()
     var onStateChanged: (() -> Unit)? = null
+
+    private var wakeLock: PowerManager.WakeLock? = null
+
+    private val prefs by lazy { getSharedPreferences("waytrace_state", Context.MODE_PRIVATE) }
+
+    private fun saveState() {
+        prefs.edit()
+            .putBoolean("is_active", state == RecordingState.RECORDING || state == RecordingState.PAUSED)
+            .putString("current_file", currentFile?.absolutePath)
+            .putLong("session_start_time", startTimeMs)
+            .putLong("elapsed_ms", elapsedMs)
+            .putInt("bump_count", bumpCount)
+            .putFloat("max_magnitude", maxMagnitude)
+            .putInt("pinpoint_count", pinpointCount)
+            .putString("start_display_time", startDisplayTime)
+            .apply()
+    }
+
+    private fun clearState() { prefs.edit().clear().apply() }
+
+    private fun restoreState(): Boolean {
+        if (!prefs.getBoolean("is_active", false)) return false
+        val path = prefs.getString("current_file", null) ?: return false
+        currentFile = File(path)
+        if (!currentFile!!.exists()) { clearState(); return false }
+        startTimeMs      = prefs.getLong("session_start_time", 0L)
+        elapsedMs        = prefs.getLong("elapsed_ms", 0L)
+        bumpCount        = prefs.getInt("bump_count", 0)
+        maxMagnitude     = prefs.getFloat("max_magnitude", 0f)
+        pinpointCount    = prefs.getInt("pinpoint_count", 0)
+        startDisplayTime = prefs.getString("start_display_time", "") ?: ""
+        return true
+    }
 
     private lateinit var sensorManager: SensorManager
     private var accelerometer: Sensor? = null
@@ -76,6 +110,7 @@ class RecorderService : Service(), SensorEventListener {
     private val timerRunnable = object : Runnable {
         override fun run() {
             elapsedMs = System.currentTimeMillis() - startTimeMs
+            saveState()
             updateNotification()
             onStateChanged?.invoke()
             timerHandler.postDelayed(this, 1000)
@@ -129,7 +164,15 @@ class RecorderService : Service(), SensorEventListener {
     }
 
     override fun onBind(intent: Intent): IBinder = binder
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int) = START_STICKY
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (state == RecordingState.READY && restoreState()) {
+            state = RecordingState.PAUSED
+            try { startForeground(NOTIF_ID, buildNotification()) } catch (_: Exception) {}
+            onStateChanged?.invoke()
+        }
+        return START_STICKY
+    }
 
     // ── Notification ──────────────────────────────────────────────────────────
 
@@ -187,42 +230,57 @@ class RecorderService : Service(), SensorEventListener {
     // ── Recording ─────────────────────────────────────────────────────────────
 
     fun startRecording() {
-        try {
-            val now = Date()
-            val ts  = SimpleDateFormat("yyyyMMddHHmm", Locale.getDefault()).format(now)
-            startDisplayTime = SimpleDateFormat("HH:mm", Locale.getDefault()).format(now)
+        val now = Date()
+        val ts  = SimpleDateFormat("yyyyMMddHHmm", Locale.getDefault()).format(now)
+        startDisplayTime = SimpleDateFormat("HH:mm", Locale.getDefault()).format(now)
 
+        try {
             val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
             dir.mkdirs()
-            currentFile = File(dir, "WT_${ts}_CSV.csv")
+            currentFile = File(dir, "ART-${ts}.csv")
             writer = PrintWriter(FileWriter(currentFile!!), true)
             writer!!.println("timestamp_ms,sensor,x,y,z,event")
+        } catch (_: Exception) { return }
 
-            bumpCount = 0; maxMagnitude = 0f; pinpointCount = 0
-            lastAccelTime = 0L; lastGyroTime = 0L
-            startTimeMs = System.currentTimeMillis(); elapsedMs = 0L
+        bumpCount = 0; maxMagnitude = 0f; pinpointCount = 0
+        lastAccelTime = 0L; lastGyroTime = 0L
+        startTimeMs = System.currentTimeMillis(); elapsedMs = 0L
 
-            registerSensors()
-            state = RecordingState.RECORDING
-            startForeground(NOTIF_ID, buildNotification())
-            timerHandler.post(timerRunnable)
-            onStateChanged?.invoke()
-        } catch (_: Exception) {}
+        wakeLock = (getSystemService(Context.POWER_SERVICE) as PowerManager)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "WayTrace::Recording")
+            .also { it.acquire(12 * 60 * 60 * 1000L) } // 12-hour safety cap
+
+        registerSensors()
+        state = RecordingState.RECORDING
+        saveState()
+        onStateChanged?.invoke()
+        try { startForeground(NOTIF_ID, buildNotification()) } catch (_: Exception) {}
+        timerHandler.post(timerRunnable)
     }
 
     fun pauseRecording() {
         sensorManager.unregisterListener(this)
         timerHandler.removeCallbacks(timerRunnable)
         elapsedMs = System.currentTimeMillis() - startTimeMs
+        wakeLock?.release(); wakeLock = null
         state = RecordingState.PAUSED
+        saveState()
         updateNotification()
         onStateChanged?.invoke()
     }
 
     fun resumeRecording() {
+        if (writer == null && currentFile != null) {
+            try { writer = PrintWriter(FileWriter(currentFile!!, true), true) } catch (_: Exception) { return }
+        }
+        wakeLock = (getSystemService(Context.POWER_SERVICE) as PowerManager)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "WayTrace::Recording")
+            .also { it.acquire(12 * 60 * 60 * 1000L) }
+
         startTimeMs = System.currentTimeMillis() - elapsedMs
         registerSensors()
         state = RecordingState.RECORDING
+        saveState()
         updateNotification()
         timerHandler.post(timerRunnable)
         onStateChanged?.invoke()
@@ -232,19 +290,21 @@ class RecorderService : Service(), SensorEventListener {
         sensorManager.unregisterListener(this)
         timerHandler.removeCallbacks(timerRunnable)
         if (state == RecordingState.RECORDING) elapsedMs = System.currentTimeMillis() - startTimeMs
+        wakeLock?.release(); wakeLock = null
         writer?.close(); writer = null
+        clearState()
         state = RecordingState.STOPPED
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
         onStateChanged?.invoke()
     }
 
-
     fun pinpoint() {
         if (state != RecordingState.RECORDING && state != RecordingState.PAUSED) return
         pinpointCount++
         val tsMs = SystemClock.elapsedRealtime()
         writer?.println("$tsMs,pinpoint,0.0,0.0,0.0,pinpoint_$pinpointCount")
+        saveState()
         updateNotification()
         onStateChanged?.invoke()
     }

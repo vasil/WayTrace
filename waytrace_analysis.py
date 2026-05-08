@@ -36,7 +36,7 @@ from datetime import datetime
 # X_gyro  = ROLL (sideways lean)
 # Z_gyro  = PITCH (wheelies)
 
-SAMPLE_RATE = 10.0  # Hz
+SAMPLE_RATE = 60.0  # Hz (Xiaomi hardware ceiling)
 GRAVITY     = 9.81  # m/s²
 
 # ISO 2631-1 whole-body vibration health thresholds (RMS over session)
@@ -51,8 +51,8 @@ VDV_MODERATE = 17.0  # m/s^1.75
 # At rest the phone reads ~9.8 m/s². These thresholds represent excess above baseline:
 # BUMP_ISO:       15.0 m/s²  =  ~5.2 m/s² excess  =  ~0.53g  →  "quite uncomfortable" (ISO 2631-1)
 # HEAVY_BUMP_ISO: 20.0 m/s²  = ~10.2 m/s² excess  =  ~1.04g  →  clinically significant shock (ISO 2631-5)
-BUMP_ISO       = 15.0  # m/s²
-HEAVY_BUMP_ISO = 20.0  # m/s²
+BUMP_ISO       = 12.0  # m/s²
+HEAVY_BUMP_ISO = 18.0  # m/s²
 
 # Jerk threshold for discrete obstacles
 JERK_OBSTACLE_THRESHOLD = 50.0  # m/s³
@@ -345,8 +345,8 @@ def main():
 
     session_name = csv_path.stem
     out_dir = csv_path.parent
-    png_path = out_dir / f"waytrace_report_{session_name.replace('sensors_', '')}.png"
-    txt_path = out_dir / f"waytrace_report_{session_name.replace('sensors_', '')}.txt"
+    png_path = out_dir / f"ANL-{session_name.replace('ART-', '')}.png"
+    txt_path = out_dir / f"ANL-{session_name.replace('ART-', '')}.txt"
 
     print(f"\nWayTrace Analysis — {session_name}")
     print("=" * 60)
@@ -391,8 +391,8 @@ def main():
     print(f"VDV           : {vdv:.2f} m/s^1.75  →  {vdv_risk} health risk")
     print(f"IRI estimate  : {iri:.1f} m/km  →  {iri_condition}")
     print(f"Dominant freq : {dom_band}")
-    print(f"Bumps ≥15 m/s² (ISO notable)   : {bump_count}  [logged by app: {bump_logged}]")
-    print(f"Heavy bumps ≥20 m/s² (ISO severe): {heavy_bump_count}  [logged by app: {heavy_bump_logged}]")
+    print(f"Bumps ≥{BUMP_ISO} m/s²       : {bump_count}  [logged by app: {bump_logged}]")
+    print(f"Heavy bumps ≥{HEAVY_BUMP_ISO} m/s²  : {heavy_bump_count}  [logged by app: {heavy_bump_logged}]")
     print(f"Jerk obstacles: {len(obstacles)}")
     print(f"Max magnitude : {stats['max']:.2f} m/s²")
     print(f"p95 magnitude : {stats['p95']:.2f} m/s²")

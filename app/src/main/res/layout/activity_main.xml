@@ -14,7 +14,7 @@
         android:layout_height="220dp"
         android:text="START"
         android:textSize="28sp"
-        android:textColor="#FFFFFF"
+        android:textColor="#00CC00"
         android:textStyle="bold"
         android:backgroundTint="#888888" />
 
@@ -44,7 +44,7 @@
             android:textSize="15sp"
             android:textColor="#FFFFFF"
             android:textStyle="bold"
-            android:backgroundTint="#0055AA"
+            android:backgroundTint="#0055CC"
             android:visibility="gone" />
 
     </LinearLayout>
