@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.BroadcastReceiver
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -13,16 +14,23 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.net.Uri
 import android.os.Binder
+import android.os.Build
 import android.os.Environment
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
+import android.provider.MediaStore
+import android.util.Log
 import androidx.core.app.NotificationCompat
+import java.io.BufferedWriter
 import java.io.File
 import java.io.FileWriter
+import java.io.IOException
+import java.io.OutputStreamWriter
 import java.io.PrintWriter
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -47,6 +55,8 @@ class RecorderService : Service(), SensorEventListener {
         prefs.edit()
             .putBoolean("is_active", state == RecordingState.RECORDING || state == RecordingState.PAUSED)
             .putString("current_file", currentFile?.absolutePath)
+            .putString("current_file_uri", currentFileUri?.toString())
+            .putString("current_file_name", currentFileName)
             .putLong("session_start_time", startTimeMs)
             .putLong("elapsed_ms", elapsedMs)
             .putInt("bump_count", bumpCount)
@@ -60,15 +70,30 @@ class RecorderService : Service(), SensorEventListener {
 
     private fun restoreState(): Boolean {
         if (!prefs.getBoolean("is_active", false)) return false
-        val path = prefs.getString("current_file", null) ?: return false
-        currentFile = File(path)
-        if (!currentFile!!.exists()) { clearState(); return false }
+        currentFileName  = prefs.getString("current_file_name", "") ?: ""
         startTimeMs      = prefs.getLong("session_start_time", 0L)
         elapsedMs        = prefs.getLong("elapsed_ms", 0L)
         bumpCount        = prefs.getInt("bump_count", 0)
         maxMagnitude     = prefs.getFloat("max_magnitude", 0f)
         pinpointCount    = prefs.getInt("pinpoint_count", 0)
         startDisplayTime = prefs.getString("start_display_time", "") ?: ""
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val uriStr = prefs.getString("current_file_uri", null)
+                ?: run { clearState(); return false }
+            currentFileUri = Uri.parse(uriStr)
+            try {
+                contentResolver.query(currentFileUri!!, arrayOf(MediaStore.Downloads.SIZE),
+                    null, null, null)?.use { c ->
+                    if (!c.moveToFirst()) { clearState(); return false }
+                } ?: run { clearState(); return false }
+            } catch (e: Exception) { clearState(); return false }
+        } else {
+            val path = prefs.getString("current_file", null)
+                ?: run { clearState(); return false }
+            currentFile = File(path)
+            if (!currentFile!!.exists()) { clearState(); return false }
+        }
         return true
     }
 
@@ -82,6 +107,22 @@ class RecorderService : Service(), SensorEventListener {
     private var writer: PrintWriter? = null
     var currentFile: File? = null
         private set
+    private var currentFileUri: Uri? = null
+    var currentFileName: String = ""
+        private set
+
+    fun getFileSize(): Long {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && currentFileUri != null) {
+            try {
+                contentResolver.query(currentFileUri!!, arrayOf(MediaStore.Downloads.SIZE),
+                    null, null, null)?.use { c ->
+                    if (c.moveToFirst()) c.getLong(0) else 0L
+                } ?: 0L
+            } catch (e: Exception) { 0L }
+        } else {
+            currentFile?.length() ?: 0L
+        }
+    }
 
     private val INTERVAL_NS = 8_333_333L  // 120 Hz
     private var lastAccelTime = 0L
@@ -105,7 +146,6 @@ class RecorderService : Service(), SensorEventListener {
         private set
     private var startTimeMs = 0L
 
-
     private val timerHandler = Handler(Looper.getMainLooper())
     private val timerRunnable = object : Runnable {
         override fun run() {
@@ -118,8 +158,8 @@ class RecorderService : Service(), SensorEventListener {
     }
 
     companion object {
-        const val CHANNEL_ID       = "waytrace_rec"
-        const val NOTIF_ID         = 1
+        const val CHANNEL_ID          = "waytrace_rec"
+        const val NOTIF_ID            = 1
         const val ACTION_PAUSE_RESUME = "com.vasil.sensorlogger.PAUSE_RESUME"
         const val ACTION_PINPOINT     = "com.vasil.sensorlogger.PINPOINT"
         const val ACTION_STOP_REQUEST = "com.vasil.sensorlogger.STOP_REQUEST"
@@ -191,11 +231,11 @@ class RecorderService : Service(), SensorEventListener {
 
         val s   = elapsedMs / 1000
         val dur = "%02d:%02d".format((s % 3600) / 60, s % 60)
-        val size = formatSize(currentFile?.length() ?: 0L)
+        val size = formatSize(getFileSize())
         val title = if (state == RecordingState.RECORDING || state == RecordingState.PAUSED)
             "$dur  $size" else "WayTrace"
 
-        val pauseResumeIcon = if (state == RecordingState.PAUSED)
+        val pauseResumeIcon  = if (state == RecordingState.PAUSED)
             android.R.drawable.ic_media_play else android.R.drawable.ic_media_pause
         val pauseResumeLabel = if (state == RecordingState.PAUSED) "Resume" else "Pause"
 
@@ -222,9 +262,9 @@ class RecorderService : Service(), SensorEventListener {
     }
 
     private fun formatSize(bytes: Long): String = when {
-        bytes < 1024          -> "${bytes}B"
-        bytes < 1024 * 1024   -> "${"%.1f".format(bytes / 1024.0)}KB"
-        else                   -> "${"%.1f".format(bytes / (1024.0 * 1024))}MB"
+        bytes < 1024        -> "${bytes}B"
+        bytes < 1024 * 1024 -> "${"%.1f".format(bytes / 1024.0)}KB"
+        else                -> "${"%.1f".format(bytes / (1024.0 * 1024))}MB"
     }
 
     // ── Recording ─────────────────────────────────────────────────────────────
@@ -233,14 +273,37 @@ class RecorderService : Service(), SensorEventListener {
         val now = Date()
         val ts  = SimpleDateFormat("yyyyMMddHHmm", Locale.getDefault()).format(now)
         startDisplayTime = SimpleDateFormat("HH:mm", Locale.getDefault()).format(now)
+        val fileName = "ART-${ts}.csv"
 
         try {
-            val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-            dir.mkdirs()
-            currentFile = File(dir, "ART-${ts}.csv")
-            writer = PrintWriter(FileWriter(currentFile!!), true)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                // Android 10+: File API is blocked for shared storage — use MediaStore
+                val values = ContentValues().apply {
+                    put(MediaStore.Downloads.DISPLAY_NAME, fileName)
+                    put(MediaStore.Downloads.MIME_TYPE, "text/csv")
+                    put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                }
+                val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                    ?: throw IOException("MediaStore insert returned null")
+                currentFileUri = uri
+                currentFile = null
+                val os = contentResolver.openOutputStream(uri)
+                    ?: throw IOException("MediaStore openOutputStream returned null")
+                writer = PrintWriter(BufferedWriter(OutputStreamWriter(os)), true)
+            } else {
+                // Android 9 and below: legacy File API
+                val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                dir.mkdirs()
+                currentFile = File(dir, fileName)
+                currentFileUri = null
+                writer = PrintWriter(FileWriter(currentFile!!), true)
+            }
+            currentFileName = fileName
             writer!!.println("timestamp_ms,sensor,x,y,z,event")
-        } catch (_: Exception) { return }
+        } catch (e: Exception) {
+            Log.e("WayTrace", "startRecording failed: ${e.message}", e)
+            return
+        }
 
         bumpCount = 0; maxMagnitude = 0f; pinpointCount = 0
         lastAccelTime = 0L; lastGyroTime = 0L
@@ -248,7 +311,7 @@ class RecorderService : Service(), SensorEventListener {
 
         wakeLock = (getSystemService(Context.POWER_SERVICE) as PowerManager)
             .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "WayTrace::Recording")
-            .also { it.acquire(12 * 60 * 60 * 1000L) } // 12-hour safety cap
+            .also { it.acquire(12 * 60 * 60 * 1000L) }
 
         registerSensors()
         state = RecordingState.RECORDING
@@ -270,8 +333,22 @@ class RecorderService : Service(), SensorEventListener {
     }
 
     fun resumeRecording() {
-        if (writer == null && currentFile != null) {
-            try { writer = PrintWriter(FileWriter(currentFile!!, true), true) } catch (_: Exception) { return }
+        if (writer == null) {
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && currentFileUri != null) {
+                    // "wa" = write-append mode
+                    val os = contentResolver.openOutputStream(currentFileUri!!, "wa")
+                        ?: throw IOException("Cannot reopen MediaStore stream for append")
+                    writer = PrintWriter(BufferedWriter(OutputStreamWriter(os)), true)
+                } else if (currentFile != null) {
+                    writer = PrintWriter(FileWriter(currentFile!!, true), true)
+                } else {
+                    return
+                }
+            } catch (e: Exception) {
+                Log.e("WayTrace", "resumeRecording failed: ${e.message}", e)
+                return
+            }
         }
         wakeLock = (getSystemService(Context.POWER_SERVICE) as PowerManager)
             .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "WayTrace::Recording")
@@ -310,7 +387,6 @@ class RecorderService : Service(), SensorEventListener {
     }
 
     private fun registerSensors() {
-        // 8333 µs = 120 Hz
         sensorManager.registerListener(this, accelerometer, 8333)
         sensorManager.registerListener(this, gyroscope,     8333)
     }

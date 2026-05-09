@@ -155,8 +155,8 @@ class MainActivity : AppCompatActivity() {
                 btnPin.text = if (pinCount == 0) "PIN" else "PIN $pinCount"
                 val s      = (svc?.elapsedMs ?: 0L) / 1000
                 val dur    = "%02d:%02d".format((s % 3600) / 60, s % 60)
-                val sizeMb = "%.1f".format((svc?.currentFile?.length() ?: 0L) / (1024.0 * 1024.0))
-                tvStatus.text = "${svc?.currentFile?.name ?: ""}  $dur  ${sizeMb}MB"
+                val sizeMb = "%.1f".format((svc?.getFileSize() ?: 0L) / (1024.0 * 1024.0))
+                tvStatus.text = "${svc?.currentFileName ?: ""}  $dur  ${sizeMb}MB"
             }
             RecordingState.PAUSED -> {
                 btnToggle.text = "RESUME"
@@ -169,8 +169,8 @@ class MainActivity : AppCompatActivity() {
                 btnPin.text = if (pinCount == 0) "PIN" else "PIN $pinCount"
                 val s      = (svc?.elapsedMs ?: 0L) / 1000
                 val dur    = "%02d:%02d".format((s % 3600) / 60, s % 60)
-                val sizeMb = "%.1f".format((svc?.currentFile?.length() ?: 0L) / (1024.0 * 1024.0))
-                tvStatus.text = "${svc?.currentFile?.name ?: ""}  $dur  ${sizeMb}MB"
+                val sizeMb = "%.1f".format((svc?.getFileSize() ?: 0L) / (1024.0 * 1024.0))
+                tvStatus.text = "${svc?.currentFileName ?: ""}  $dur  ${sizeMb}MB"
             }
             RecordingState.STOPPED -> {
                 btnToggle.text = "START"
@@ -178,10 +178,10 @@ class MainActivity : AppCompatActivity() {
                 btnToggle.setTextColor(0xFF00CC00.toInt())
                 btnStop.visibility = View.GONE
                 btnPin.visibility  = View.GONE
-                val sizeKb = (svc?.currentFile?.length() ?: 0L) / 1024
+                val sizeKb = (svc?.getFileSize() ?: 0L) / 1024
                 val s      = (svc?.elapsedMs ?: 0L) / 1000
                 val dur    = "%02d:%02d".format((s % 3600) / 60, s % 60)
-                tvStatus.text = "${svc?.currentFile?.name ?: ""}  ${sizeKb}KB  $dur"
+                tvStatus.text = "${svc?.currentFileName ?: ""}  ${sizeKb}KB  $dur"
             }
         }
     }
