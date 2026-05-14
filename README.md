@@ -21,11 +21,13 @@ WayTrace/
 ├── waytrace_strava.py         Fetch GPS track from the latest Strava activity
 ├── waytrace_locate.py         Combine ART CSV + GPX → bad-spot map of the route
 ├── waytrace_calibrate.py      Derive a per-chair calibration profile from a 7-pin session
+├── waytrace_denoise.py        Clean helmet-camera audio noise (analyze + filter modes)
 ├── waytrace_fetch.py          Pull video files from Akaso V50 X over WiFi
 ├── README.md                  This file
 ├── MERGE.md                   How to merge multi-part sessions
 ├── STRAVA.md                  One-time setup for the Strava API client
 ├── CALIBRATION.md             5-minute per-chair calibration protocol
+├── DENOISE.md                 Manual for waytrace_denoise.py
 ├── LITERATURE-...md           Wheelchair-vibration prior-art brief (ISO 2631-1 etc.)
 └── SRS-v2-full-sensor-iso.md  Spec for the v2 multi-sensor upgrade
 ```
@@ -222,6 +224,32 @@ python3 waytrace_calibrate.py ~/Downloads/ART-CAL-*.csv \
 ```
 
 Full protocol in [CALIBRATION.md](CALIBRATION.md).
+
+### `waytrace_denoise.py` — clean helmet-camera audio noise
+
+Action-camera footage of a wheelchair push picks up wind rumble,
+caster rolling noise, frame vibration, and rim handling. This script
+cleans it up. The video stream is **copied bit-for-bit** (no
+re-encoding); only the audio is replaced.
+
+```bash
+# 1) Analyse first
+python3 waytrace_denoise.py PUSH.mov --analyze
+
+# 2) General clean-up (no extra deps)
+python3 waytrace_denoise.py PUSH.mov
+
+# 3) Wheelchair-tuned preset
+python3 waytrace_denoise.py PUSH.mov --target-caster
+
+# 4) Custom notch frequencies (Hz)
+python3 waytrace_denoise.py PUSH.mov --notch 220,440
+
+# 5) Profile-based — best, needs sox
+python3 waytrace_denoise.py PUSH.mov --profile-from 0:05-0:08
+```
+
+Full manual in [DENOISE.md](DENOISE.md).
 
 ### `waytrace_fetch.py` — pull video from the camera
 

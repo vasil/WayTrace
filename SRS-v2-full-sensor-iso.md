@@ -1,8 +1,8 @@
 # WayTrace SRS update v2 — full-sensor capture and ISO 2631-1 compliant analysis
 
-Status: **specification, not yet implemented**
-Author: drafted with Claude Code
-Date: 2026-05-14
+Status: **in progress** (see § "Implementation status" below)
+Author: drafted with Claude Code (on desktop)
+Last updated: 2026-05-14
 
 This document defines the additions to the WayTrace Android app and the
 Python analysis pipeline needed to (a) make road-quality reporting
@@ -13,6 +13,185 @@ The goal: replace the current invented "severity" score with
 peer-review-defensible vibration metrics, and add the missing sensors
 that explain *why* a section of road is rough (chassis tilt, slope,
 heading, etc.) without changing the on-bike hardware.
+
+---
+
+## Implementation status (handoff snapshot)
+
+This section is the **source of truth for where we are**. Read this
+first. The detailed sections below are the original spec — some of
+their items are now [DONE], some are [TODO], a few are [SUPERSEDED].
+
+### [DONE] Android v2 data capture
+- New sensors recorded in `RecorderService.kt`:
+  `gravity`, `mag` (calibrated `TYPE_MAGNETIC_FIELD`), `rotvec`,
+  `pressure` (absent on this Xiaomi — silently null).
+- Manifest declares `compass` and `barometer` as optional `uses-feature`.
+- CSV header is **unchanged**: still `timestamp_ms,sensor,x,y,z,event`.
+  The quaternion's `w` rides in the `event` column on `rotvec` rows.
+- `accel` / `gyro` / `pinpoint` rows are **byte-for-byte identical** to
+  v1 builds. Existing on-phone `bump` / `heavy_bump` / `wheelie` / `tilt`
+  detection is unchanged. UI is unchanged.
+- Stationary acceptance test passes:
+  gravity magnitude **9.8067 m/s²**, quaternion magnitude **1.000000**,
+  geomagnetic field **51 µT** (Prilep is in the 49 µT band; 100 % of
+  samples in 25–65 µT).
+- Sample rate confirmed at **60 Hz** (Xiaomi hardware ceiling) when
+  the app is foregrounded. One earlier recording showed a transient
+  30 Hz throttle; subsequent screen-on / screen-off A/B tests both
+  delivered 60 Hz, so the throttle was not reproducible. If it
+  reappears, the fix is to whitelist WayTrace in MIUI battery saver.
+- APK in the repo: `app/build/outputs/apk/debug/WT-202605140351.apk`.
+
+### [DONE] Python pipeline — generation awareness and speed filter
+- `waytrace_analysis.detect_generation()` returns one of `v1`,
+  `v2-partial`, `v2-full`. Both `waytrace_analysis.py` and
+  `waytrace_locate.py` print the result in their report headers.
+- `waytrace_locate.py` has the Wolf-2005 speed-normalisation filter
+  built in (0.8–1.5 m/s window). In-range segments are ranked in the
+  headline table; out-of-range hotspots get a separate sanity-check
+  section. Each ranked bad spot prints the speed at which it was
+  crossed.
+- `waytrace_locate.py --chair NAME` accepts a per-chair calibration
+  profile from `~/.config/waytrace/chairs/<NAME>.json`. Silent
+  fallback when the profile is absent.
+- **First v2-full real ride is recorded**: ART-202605141445.csv +
+  GPS-202605141445.gpx, 5.62 km, 54m52s, "Data Takes Flight Push".
+  Generation banner reads "v2-full — frame-correct ISO analysis
+  available".
+
+### [SUPERSEDED] Calibration via seven pinpoint taps
+- `waytrace_calibrate.py` exists and works on a 7-pin file, but the
+  protocol is impractical: lifting a wheelchair-mounted phone to tap
+  the screen mid-ride and remounting it is friction the rider cannot
+  reasonably accept. The script will be **rewritten** (see TODO).
+
+### [DONE] Wheelchair-vibration literature review
+- `LITERATURE-wheelchair-vibration.md` summarises the canonical
+  studies: Wolf 2005, VanSickle 2001, Garcia-Mendez 2013,
+  Chénier 2014, Misch 2022, Larivière 2021 systematic review,
+  WheelShare / MyPath smartphone work.
+- Headline finding: **caster-fork mount overstates body-relevant
+  vibration ~3×.** ISO 2631-1 is written for the seat. The phone
+  mount should be on the **seat tube near the hip** before any
+  ISO-compliant absolute numbers are published.
+- 60–120 Hz sampling is **sufficient** for Wk-weighted RMS / VDV /
+  MTVV per Garcia-Mendez 2013.
+- Relative rankings on the same chair are preserved across rides
+  even without calibration; absolute numbers and cross-chair
+  comparisons require an anchor.
+
+### [DONE] Repository state
+- Committed and pushed to `origin/main` (commit `53302a7`).
+- 13 files changed, +2050 / -13.
+- `linaccel`, `step`, `light` were dropped before commit (no
+  scientific value for the road-quality goal; `linaccel` is
+  derivable from `accel - gravity`).
+
+---
+
+## Pending tasks (TODOs ordered by priority)
+
+### [TODO 1] Rewrite `waytrace_calibrate.py` for pin-free auto-segmentation
+**Why:** the user cannot tap PIN seven times during a wheelchair
+ride. Mounted phone is out of reach; unmounting and remounting
+between taps is unworkable.
+
+**How:** the script reads a normal recording and auto-detects:
+- **Stationary phase** = longest stretch where `accel` magnitude std
+  is < 0.05 m/s² over at least 20 s.
+- **Corridor phase** = longest stretch where the rider is *moving*
+  (GPS speed in 0.8–1.5 m/s) AND `accel` std is low (smooth surface).
+- **Drop events** = top-N sharpest accel peaks separated by > 2 s.
+
+Output JSON profile is identical in shape to today's; no user input
+required beyond `--chair NAME --mount LOCATION`.
+
+### [TODO 2] Implement `waytrace_iso.py` — ISO 2631-1 weightings
+- Wk filter (vertical seat z-axis), Wd filter (horizontal x/y) as
+  IIR biquad cascades per ISO Annex A.
+- Weighted RMS, VDV, MTVV, crest factor, 1/3-octave band power,
+  Annex C comfort category.
+- Acceptance: pass ISO Annex A reference-tone tests (1 / 4 / 8 / 16
+  / 31.5 Hz sinusoids must produce published gain values within
+  ±0.5 dB).
+- Independent of Android side. Can be done now against the existing
+  v2-full ride.
+
+### [TODO 3] World-frame transformation in `waytrace_locate.py`
+- Per sample: `a_world(t) = R(q(t)) · (a_raw(t) − g(t))`.
+- Uses `rotvec` quaternion + `gravity` vector — both already recorded.
+- Eliminates the current Y-axis-vertical false positives that happen
+  when the chair tilts (curb ramps, wheelies).
+
+### [TODO 4] Wire ISO weighted total `a_v` into bad-spot detection
+- Replace the heuristic severity score with `a_v` per 2-second window.
+- Thresholds: `> 0.8 m/s²` UNCOMFORTABLE, `> 1.25 m/s²` VERY
+  UNCOMFORTABLE, `MTVV / a_v > 9` SHOCK_DOMINATED.
+- Keep custom severity as internal debug only.
+
+### [TODO 5] Re-mount the phone on the seat tube
+- Hardware action by the user. Until done, all "ISO-compliant"
+  numbers in reports carry a "caster-fork mount, overstated ~3×"
+  caveat. The literature is clear on this; no software fix.
+
+### [TODO 6] Heading-aware route geometry
+- From `rotvec` and `mag`: per-sample compass heading.
+- Enables one-way-pothole detection: same lat/lon, different
+  direction, asymmetric severity.
+
+### [TODO 7] Helmet-camera fusion — camera-clock offset captured
+- **Setup data captured today (2026-05-14):**
+  the user shot a frame of a wall-clock with the helmet camera
+  while a phone displaying its own clock was visible. The point of
+  the exercise is to measure `camera_clock - phone_clock` offset so
+  future video can be aligned to sensor/GPS timestamps.
+- **Phone-side timestamp captured (from app screenshots, Drive):**
+  - `Screenshot_2026-05-14-14-45-11-876_com.vasil.sensorlogger.jpg`
+    — phone time **14:45:11.876** at the start of the ride.
+  - `Screenshot_2026-05-14-14-45-17-804_com.miui.home.jpg`
+    — phone time **14:45:17.804**.
+  - `Screenshot_2026-05-14-15-27-26-744_com.vasil.sensorlogger.jpg`
+    — phone time **15:27:26.744**, mid-ride.
+- **Camera-side data is not yet uploaded** — still on the Akaso SD
+  card on `vt-x1`. Once the matching helmet-camera frame is
+  available, read the clock-display time and compute:
+  `offset = camera_clock_displayed_time - phone_clock_in_screenshot`.
+- **Status:** documented, blocked on camera footage transfer.
+
+### [TODO 8] Optional — Bluetooth remote button for mid-ride pinpoints
+- Cheap BT shutter remote → app receives a key event → emit a
+  `pinpoint_N` row.
+- Removes the "lift phone to tap" friction entirely.
+- Useful far beyond calibration: marking any landmark on the route.
+
+### [TODO 9] Slope estimation (waiting for hardware)
+- `pressure` rows can give altitude via barometric formula; combined
+  with GPS speed → road grade.
+- **Blocked**: this Xiaomi has no barometer. The handler is in place;
+  rows simply never appear. Defer.
+
+---
+
+## Open issues / decisions deferred
+
+- **Sample-rate transient throttling under MIUI.** Seen once, not
+  reproducible in A/B tests. If it reappears in real-ride data,
+  whitelist WayTrace in MIUI battery saver. No code fix yet.
+- **Foldable → rigid chair transition.** Vasil will get a rigid chair
+  soon. Cross-chair absolute comparisons require an anchor — see
+  TODO 1 (calibration) + the `LITERATURE` doc for the drop-test
+  protocol.
+- **Today's "Data Takes Flight Push" had zero in-range bad spots.**
+  All 5 bad segments were crossed at < 0.21 m/s — start/end/pauses,
+  not road. Either the route was genuinely clean, or the still-on-
+  caster-fork mount is amplifying start/stop transients. TODO 5
+  resolves the ambiguity.
+
+---
+
+(Original specification follows — kept verbatim. Annotate against
+the status section above when reading.)
 
 ---
 
@@ -49,263 +228,101 @@ existing accelerometer and gyroscope. All sample at the maximum rate
 the device supports up to **60 Hz** (Xiaomi ceiling) and are written
 to the same CSV with a new `sensor` value:
 
-| `sensor` token   | Android type                          | units    | notes                                                                                                            |
-|---               |---                                    |---       |---                                                                                                               |
-| `gravity`        | `TYPE_GRAVITY`                        | m/s²     | low-pass-filtered gravity vector in phone frame                                                                  |
-| `linaccel`       | `TYPE_LINEAR_ACCELERATION`            | m/s²     | accel with gravity already removed — convenient for vibration analysis but **not** a substitute for raw accel    |
-| `mag`            | `TYPE_MAGNETIC_FIELD_UNCALIBRATED`    | µT       | three-axis magnetometer — for compass heading; uncalibrated variant retains raw readings + hard-iron bias        |
-| `rotvec`         | `TYPE_ROTATION_VECTOR`                | quat     | fused orientation, x/y/z/w as a unit quaternion in the SI ENU world frame                                        |
-| `pressure`       | `TYPE_PRESSURE`                       | hPa      | barometer — gives altitude (and via differencing: road slope) where the device has one                           |
-| `step`           | `TYPE_STEP_DETECTOR`                  | event    | one row per push detection (Xiaomi pedometer; useful as "push cadence" proxy for self-propelled rides)           |
-| `light`          | `TYPE_LIGHT`                          | lx       | ambient light, optional; useful only as context (daylight vs streetlight vs tunnel)                              |
+| `sensor` token   | Android type                          | units    | status   |
+|---               |---                                    |---       |---       |
+| `gravity`        | `TYPE_GRAVITY`                        | m/s²     | [DONE]   |
+| `linaccel`       | `TYPE_LINEAR_ACCELERATION`            | m/s²     | [DROPPED] derivable from `accel - gravity` |
+| `mag`            | `TYPE_MAGNETIC_FIELD` (calibrated)    | µT       | [DONE]   |
+| `rotvec`         | `TYPE_ROTATION_VECTOR`                | quat     | [DONE]   |
+| `pressure`       | `TYPE_PRESSURE`                       | hPa      | [DONE] (sensor absent on this Xiaomi) |
+| `step`           | `TYPE_STEP_DETECTOR`                  | event    | [DROPPED] not useful for wheelchair |
+| `light`          | `TYPE_LIGHT`                          | lx       | [DROPPED] no analysis uses it |
 
-Keep the existing rows:
-
-| `sensor` token | source                  |
-|---             |---                      |
-| `accel`        | `TYPE_ACCELEROMETER`    |
-| `gyro`         | `TYPE_GYROSCOPE`        |
-| `pinpoint`     | UI button — unchanged   |
+Keep the existing rows: `accel`, `gyro`, `pinpoint`. [DONE — unchanged.]
 
 ### 2.2 Updated CSV format
-
-Six columns stay the same; the meaning of `x,y,z` depends on `sensor`.
-For sensors whose native dimensionality is less than three (e.g.
-`pressure`, `step`, `light`), the unused columns are empty.
-
-```
-timestamp_ms,sensor,x,y,z,event
-```
-
-`rotvec` has four components; we extend the convention with a "w" value
-stored in the `event` field for that row only:
-
-```
-timestamp_ms,sensor,x,y,z,event
-1234567,rotvec,0.012,-0.034,0.978,0.205
-```
-
-i.e. for `rotvec`, the quaternion is (x, y, z, w) where `w` lives in the
-`event` column. This avoids an extra column for one sensor type. The
-Python loader (§3.4) handles this.
+[DONE.] Six columns stay the same. `rotvec` rides `w` in the `event`
+column for the one row that needs four numbers.
 
 ### 2.3 Sampling and storage
-
-- All sensors are registered with `SENSOR_DELAY_GAME` (≈50 Hz) or a
-  faster rate where the device supports it.
-- The foreground service keeps them all alive across screen-off and app
-  background; the existing crash-recovery (`SharedPreferences` flush
-  every second) is extended to cover the new sensors.
-- File-size impact estimate: total bytes/second increases from ~600 B/s
-  to ~2.3 kB/s. A two-hour push grows from ≈4 MB to ≈16 MB — still
-  trivial for the phone and trivial for Drive sync.
+[DONE.] All sensors at 8333 µs request. Actual delivered rate ≈ 60 Hz.
+Foreground service unchanged. SharedPreferences crash-recovery unchanged.
 
 ### 2.4 SRS-derived UI requirements
-
-No UI changes. The existing single-button state machine is unaffected.
-The status line continues to show filename + elapsed + size; with the
-new sensors the size grows ~4× faster, which the user is already used
-to seeing.
+[DONE.] Zero UI changes shipped.
 
 ### 2.5 SRS-derived test requirements
-
-A new acceptance test: record 60 seconds of stationary data with the
-phone flat on a table, then 60 seconds with the phone in the wheelchair
-mount stationary. Both runs must:
-
-1. produce `gravity` rows whose three-axis magnitude is 9.81 ± 0.05 m/s²
-2. produce `rotvec` rows whose quaternion magnitude is 1.0 ± 0.001
-3. produce `mag` rows whose three-axis magnitude is within 25–65 µT
-   (the Earth-field magnitude band)
-
-This validates that the sensors are wired correctly and that the
-quaternion convention used by the CSV writer matches the one used by
-the analyser.
+[DONE.] All three acceptance tests pass.
 
 ---
 
 ## 3. Analysis-side changes (Python)
 
-### 3.1 New module: `waytrace_iso.py`
+### 3.1 `waytrace_iso.py` — [TODO 2]
+Not yet implemented. Pure-function module with Wk/Wd filters, weighted
+RMS, VDV, MTVV, crest factor, 1/3-octave bands, comfort category.
+Will live in its own file so it can be unit-tested against ISO Annex
+A reference tones.
 
-Pure-function module implementing ISO 2631-1 weightings and the
-metrics derived from them. No I/O. Intended to be imported by
-`waytrace_analysis.py` and `waytrace_locate.py`.
+### 3.2 ISO 2631-1 weighting filters — [TODO 2]
+Wk and Wd biquad cascades per ISO Annex A.
 
-Public API:
+### 3.3 Metrics computed per ride — [TODO 2]
+Output: a new `ISO-YYYYMMDDHHMM.txt` file with one section per
+metric. The existing custom `severity` score will be retained as
+internal debug but removed from the headline ranking.
 
-```python
-def wk_filter(signal, fs):                   # Wk weighting (z-axis seated)
-def wd_filter(signal, fs):                   # Wd weighting (x,y horizontal)
-def weighted_rms(signal, fs, axis):          # axis ∈ {"z","x","y"}
-def vdv(signal, fs, axis):                   # vibration dose value
-def mtvv(signal, fs, axis, window=1.0):      # max transient vibration value
-def crest_factor(signal, fs, axis):          # peak / weighted_rms
-def one_third_octave_bands(signal, fs):      # band powers, 0.5 – 80 Hz
-def comfort_category(weighted_rms):          # ISO 2631-1 Annex C
-```
+### 3.4 Frame transformation — [TODO 3]
+`a_world(t) = R(q(t)) · (a_raw(t) − g(t))`. Required for ISO axis-
+correctness on a tilting chair.
 
-### 3.2 ISO 2631-1 weighting filters
+### 3.5 Heading and route geometry — [TODO 6]
 
-The Wk and Wd filters are infinite-impulse-response biquad cascades
-defined in Annex A of the standard. They are not free — implementing
-them from scratch is a half-day of careful work — but they are widely
-published and have reference implementations to verify against
-(`pyrosm`, `vibration_toolbox`, and Excel templates from EU labs).
+### 3.6 Push cadence — [DROPPED with `step` sensor]
 
-Acceptance: pass the ISO 2631-1 Annex A reference-tone tests (sinusoid
-at 1, 4, 8, 16, 31.5 Hz must produce the published gain values within
-±0.5 dB).
-
-### 3.3 Metrics computed per ride
-
-For each ride (i.e. each ART CSV) the analyser computes and reports:
-
-| metric                | symbol      | unit         | computed from                                |
-|---                    |---          |---           |---                                           |
-| weighted RMS, z       | `a_wz`      | m/s²         | Wk-weighted vertical (world-frame z) accel   |
-| weighted RMS, x       | `a_wx`      | m/s²         | Wd-weighted forward accel                    |
-| weighted RMS, y       | `a_wy`      | m/s²         | Wd-weighted lateral accel                    |
-| total weighted RMS    | `a_v`       | m/s²         | `√(1.4²·a_wx² + 1.4²·a_wy² + a_wz²)`         |
-| **VDV (z)**           | `VDV_z`     | m·s⁻¹·⁷⁵    | `(∫ a_wz(t)⁴ dt)^(1/4)`                      |
-| **MTVV (z)**          | `MTVV_z`    | m/s²         | max 1-second running RMS of `a_wz`           |
-| **Crest factor (z)**  | `CF_z`      | dimensionless| peak(`a_wz`) / `a_wz`                        |
-| Daily exposure A(8)   | `A(8)`      | m/s²         | extrapolated 8 h RMS, ISO §6.4.1             |
-| Daily exposure VDV(8) | `VDV(8)`    | m·s⁻¹·⁷⁵    | extrapolated 8 h VDV, ISO §6.4.2             |
-| 1/3-octave band power | `Pᵢ`        | m²/s⁴       | 0.5 – 80 Hz, for spectrogram and surface ID  |
-
-Output per ride: a new `ISO-YYYYMMDDHHMM.txt` file with one section per
-metric, plus the ISO 2631-1 Annex C comfort category for the
-weighted total `a_v`:
-
-```
-< 0.315 m/s²            Not uncomfortable
-0.315 – 0.63 m/s²       A little uncomfortable
-0.5   – 1.0  m/s²       Fairly uncomfortable
-0.8   – 1.6  m/s²       Uncomfortable
-1.25  – 2.5  m/s²       Very uncomfortable
-> 2.0 m/s²              Extremely uncomfortable
-```
-
-The existing `severity` score is **removed from the headline
-ranking**. It may stay as an internal debug metric, marked as such.
-
-### 3.4 Frame transformation
-
-The biggest single accuracy improvement: rotate accelerations into the
-**world frame** before computing anything.
-
-For each sample with timestamp `t`:
-
-1. Find the nearest `rotvec` row → unit quaternion `q(t)`.
-2. Find the nearest `gravity` row → gravity vector `g(t)`.
-3. Compute `a_linear(t) = a_raw(t) − g(t)` in phone frame.
-4. Rotate `a_linear(t)` by `q(t)` to obtain `a_world(t) = R(q) · a_linear`.
-5. `a_world.z` is now true vertical, irrespective of how the phone is
-   mounted or how the chassis tilts when crossing a curb-ramp.
-
-This eliminates a class of false positives where the current
-"Y-axis = vertical" assumption picked up chassis-tilt as if it were a
-bump (e.g. tipping back to climb a 5 cm lip looks like a 1 g spike on
-phone-Y).
-
-### 3.5 Heading and route geometry
-
-With magnetometer + rotvec we can extract per-sample heading. This
-lets the locator:
-
-- distinguish "rough patch when heading east" from the same patch
-  westbound (one-way pothole asymmetry)
-- compute road slope by combining barometer-derived altitude
-  derivative with horizontal speed
-- correct bump severity for slope (going downhill loads the chassis
-  differently from level)
-
-### 3.6 Push cadence
-
-`step` events from `TYPE_STEP_DETECTOR` give a rough push rhythm. Two
-candidate features:
-
-- mean cadence (pushes/min) per ride
-- cadence change correlated with surface change (does the rider slow
-  pushing on rough surface?)
-
-Cadence is descriptive, not part of the ISO output. Goes into
-`waytrace_analysis.py`.
-
-### 3.7 Updated `waytrace_locate.py`
-
-The locator stays the same in shape — find bad spots, plot them on a
-map — but bad-spot detection is now driven by the weighted total
-`a_v` (per 2-second window) rather than the home-grown severity
-score. The thresholds become:
-
-| trigger                                    | flag                |
-|---                                         |---                  |
-| `a_v` window > 0.8 m/s² (Uncomfortable)    | `UNCOMFORTABLE`     |
-| `a_v` window > 1.25 m/s² (Very)            | `VERY_UNCOMFORTABLE`|
-| `MTVV / a_v` > 9                           | `SHOCK_DOMINATED`   |
-| `VDV` window contribution top 1 %          | `DOSE_HOTSPOT`      |
-| `heavy_bump` event in window               | `EVENT`             |
-
-The map and report formats are unchanged; what changes is the words on
-the legend and the numbers in the columns.
+### 3.7 Updated `waytrace_locate.py` — partially done
+- [DONE] Speed normalisation (Wolf 2005 window).
+- [DONE] `--chair` argument.
+- [DONE] Generation banner in report headers.
+- [TODO 4] Bad-spot detection driven by ISO `a_v` instead of the
+  custom severity score.
 
 ---
 
 ## 4. Outputs (per ride)
 
-After this change a single ride produces:
-
-| file                          | content                                           |
-|---                            |---                                                |
-| `ART-YYYYMMDDHHMM.csv`         | raw multi-sensor log (Android side)              |
-| `ANL-YYYYMMDDHHMM.png/txt`    | existing 5-panel analysis                         |
-| `ISO-YYYYMMDDHHMM.txt`        | **new** — ISO 2631-1 weighted metrics + category  |
-| `LOC-YYYYMMDDHHMM.png/txt`    | map + bad-spot ranking, driven by `a_v`           |
-| `GPS-YYYYMMDDHHMM.gpx`        | Strava-fetched track (unchanged)                  |
+| file                          | content                                           | status   |
+|---                            |---                                                |---       |
+| `ART-YYYYMMDDHHMM.csv`         | raw multi-sensor log (Android side)              | [DONE]   |
+| `ANL-YYYYMMDDHHMM.png/txt`    | existing 5-panel analysis                         | [DONE — generation banner added] |
+| `ISO-YYYYMMDDHHMM.txt`        | ISO 2631-1 weighted metrics + category            | [TODO 2] |
+| `LOC-YYYYMMDDHHMM.png/txt`    | map + bad-spot ranking, driven by `a_v`           | [PARTIAL — current builds use heuristic severity, switch to `a_v` is TODO 4] |
+| `GPS-YYYYMMDDHHMM.gpx`        | Strava-fetched track                              | [DONE]   |
+| `CAL-<chair>.json`            | per-chair calibration profile                     | [TODO 1] |
 
 ---
 
 ## 5. Implementation order (suggested)
-
-1. **`waytrace_iso.py`** with Wk/Wd filters and unit tests against
-   ISO Annex A reference tones. Independent of Android changes.
-2. Android: add `gravity`, `rotvec`, `mag` (in that priority). Test
-   with the §2.5 stationary acceptance test.
-3. Update `waytrace_locate.py` to run frame transformation when
-   `rotvec`/`gravity` are present, fall back to current Y-axis-vertical
-   behaviour otherwise (backwards compatible with existing ART files).
-4. Wire `a_v` into bad-spot detection. Keep old severity column for
-   one release as a regression check.
-5. Add `pressure` → slope, `step` → cadence. Lowest priority — they
-   are descriptive, not part of the ISO output.
-
-Each step is independently shippable and independently testable.
+1. [DONE] `waytrace_iso.py`... wait — that's still TODO 2 above. Was
+   listed first in the original plan because it's pure-DSP and
+   independent of Android. Promote it as the next-up task.
+2. [DONE] Android: gravity, rotvec, mag, pressure.
+3. [TODO 3] Frame transformation in `waytrace_locate.py`.
+4. [TODO 4] Wire `a_v` into bad-spot detection.
+5. [TODO 6] Heading / slope features.
 
 ---
 
 ## 6. What stays out of scope
-
-- Audio recording (surface-texture-from-rolling-sound). Privacy and
-  storage cost are non-trivial; revisit only if the visual + IMU
-  data ever proves insufficient.
-- Frame-by-frame fusion with the helmet camera. That is the planned
-  next step but is its own SRS document, not part of this one.
-- Real-time on-phone analysis. Everything still computes off-line on
-  the desktop after the ride.
+- Audio recording (privacy + storage cost).
+- Real-time on-phone analysis.
+- Frame-by-frame fusion with the helmet camera — that is **TODO 7**
+  in this update.
 
 ---
 
 ## 7. References
-
-- ISO 2631-1:1997 + Amd 1:2010 — Mechanical vibration and shock —
-  Evaluation of human exposure to whole-body vibration — Part 1:
-  General requirements
-- Griffin, M. J. *Handbook of Human Vibration*, Academic Press, 1990
-- Wolf, E., Pearlman, J., et al. *Vibration exposure of individuals
-  using wheelchairs over sidewalk surfaces.* Disability and
-  Rehabilitation, 2005 — directly relevant prior art for the
-  wheelchair use-case.
-- Android Sensors API:
-  https://developer.android.com/reference/android/hardware/Sensor
+See `LITERATURE-wheelchair-vibration.md` for the full prior-art
+brief. Key citations: ISO 2631-1:1997 Amd 1:2010; Griffin's *Handbook
+of Human Vibration*; Wolf et al. 2005; Garcia-Mendez et al. 2013;
+Misch & Sprigle 2022; Larivière et al. 2021 systematic review.
