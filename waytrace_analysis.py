@@ -64,6 +64,43 @@ def load_csv(path: Path) -> pd.DataFrame:
     return df
 
 
+# ── File generation detection (v1 vs v2) ─────────────────────────────────────
+#
+# v1 files contain only accel / gyro / pinpoint rows.
+# v2 files additionally contain gravity, rotvec, mag, linaccel, pressure,
+# step, or light rows. "v2-full" requires all three of gravity, rotvec, mag
+# — they are what enable world-frame transformation and ISO-compliant
+# axis-correct weightings. Anything in between is "v2-partial".
+
+V2_CORE_SENSORS = {'gravity', 'rotvec', 'mag'}
+# `linaccel`, `step`, `light` appeared in early v2 builds only; the loader
+# still accepts them silently so those recordings remain readable.
+V2_OPTIONAL_SENSORS = {'pressure', 'linaccel', 'step', 'light'}
+
+
+def detect_generation(df: pd.DataFrame):
+    """Return (generation, sensors_present) for an already-loaded ART frame."""
+    sensors_present = set(df['sensor'].dropna().unique())
+    v2_core_present = V2_CORE_SENSORS & sensors_present
+    if not v2_core_present and not (V2_OPTIONAL_SENSORS & sensors_present):
+        return 'v1', sensors_present
+    if V2_CORE_SENSORS.issubset(sensors_present):
+        return 'v2-full', sensors_present
+    return 'v2-partial', sensors_present
+
+
+def generation_banner(gen: str, sensors_present: set) -> str:
+    """One-line description of file precision tier, for report headers."""
+    if gen == 'v2-full':
+        extras = sensors_present - {'accel', 'gyro', 'pinpoint'} - V2_CORE_SENSORS
+        extra_note = f" + {','.join(sorted(extras))}" if extras else ""
+        return f"v2-full (gravity + rotvec + mag{extra_note}) — frame-correct ISO analysis available"
+    if gen == 'v2-partial':
+        missing = V2_CORE_SENSORS - sensors_present
+        return f"v2-partial — missing {','.join(sorted(missing))}; using legacy Y-axis-vertical approximation"
+    return "v1 (accel + gyro only) — legacy Y-axis-vertical approximation"
+
+
 def split_sensors(df: pd.DataFrame):
     accel = df[df['sensor'] == 'accel'].copy().reset_index(drop=True)
     gyro  = df[df['sensor'] == 'gyro'].copy().reset_index(drop=True)
@@ -358,6 +395,8 @@ def main():
         print("Not enough accelerometer data.")
         sys.exit(1)
 
+    generation, sensors_present = detect_generation(df)
+    print(f"File generation: {generation_banner(generation, sensors_present)}")
     print(f"Rows loaded   : {len(df)} total ({len(accel)} accel, {len(gyro)} gyro)")
     print(f"Duration      : {accel['t_s'].iloc[-1]:.1f} s")
 
@@ -411,7 +450,8 @@ def main():
     print(f"\n{log_line}")
 
     # Save text report
-    txt_path.write_text(log_line + "\n\nBand power:\n" +
+    gen_line = f"File generation: {generation_banner(generation, sensors_present)}\n\n"
+    txt_path.write_text(gen_line + log_line + "\n\nBand power:\n" +
                         "\n".join(f"  {k}: {v:.4f}" for k, v in band_power.items()) +
                         f"\n\nStats:\n" +
                         "\n".join(f"  {k}: {v:.4f}" for k, v in stats.items()),

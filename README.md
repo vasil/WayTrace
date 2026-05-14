@@ -15,12 +15,19 @@ accessibility advocacy.
 
 ```
 WayTrace/
-├── app/                    Android app source (Kotlin, AGP 8.13, SDK 34)
-├── waytrace_analysis.py    7-technique signal analysis toolkit
-├── waytrace_merge.py       Combine multi-part recordings into one session
-├── waytrace_fetch.py       Pull video files from Akaso V50 X over WiFi
-├── README.md               This file
-└── MERGE.md                How to merge multi-part sessions
+├── app/                       Android app source (Kotlin, AGP 8.13, SDK 34)
+├── waytrace_analysis.py       7-technique signal analysis toolkit
+├── waytrace_merge.py          Combine multi-part recordings into one session
+├── waytrace_strava.py         Fetch GPS track from the latest Strava activity
+├── waytrace_locate.py         Combine ART CSV + GPX → bad-spot map of the route
+├── waytrace_calibrate.py      Derive a per-chair calibration profile from a 7-pin session
+├── waytrace_fetch.py          Pull video files from Akaso V50 X over WiFi
+├── README.md                  This file
+├── MERGE.md                   How to merge multi-part sessions
+├── STRAVA.md                  One-time setup for the Strava API client
+├── CALIBRATION.md             5-minute per-chair calibration protocol
+├── LITERATURE-...md           Wheelchair-vibration prior-art brief (ISO 2631-1 etc.)
+└── SRS-v2-full-sensor-iso.md  Spec for the v2 multi-sensor upgrade
 ```
 
 ---
@@ -52,9 +59,23 @@ timestamp_ms,sensor,x,y,z,event
 | column | meaning |
 |---|---|
 | `timestamp_ms` | milliseconds since device boot |
-| `sensor`       | `accel`, `gyro`, or `pinpoint` |
-| `x, y, z`      | m/s² (accel) or rad/s (gyro) |
-| `event`        | empty, or `bump`, `heavy_bump`, `wheelie`, `tilt`, `fall`, `pinpoint_N` |
+| `sensor`       | `accel`, `gyro`, `pinpoint` — and from v2: `gravity`, `mag`, `rotvec`, `pressure` |
+| `x, y, z`      | meaning depends on `sensor` (see table below) |
+| `event`        | empty, or `bump`, `heavy_bump`, `wheelie`, `tilt`, `fall`, `pinpoint_N`. For `rotvec` rows: the quaternion's `w` component |
+
+| sensor    | x          | y          | z          | units    | notes |
+|---        |---         |---         |---         |---       |---    |
+| `accel`   | forward    | vertical   | lateral    | m/s²     | raw, gravity-included |
+| `gyro`    | roll       | yaw        | pitch      | rad/s    | |
+| `gravity` | gravity-x  | gravity-y  | gravity-z  | m/s²     | v2 only — software-fused gravity vector |
+| `mag`     | field-x    | field-y    | field-z    | µT       | v2 only — calibrated magnetometer (`TYPE_MAGNETIC_FIELD`) |
+| `rotvec`  | quat-x     | quat-y     | quat-z     | unit-quat| v2 only — `event` column carries quat-w |
+| `pressure`| hPa        | (empty)    | (empty)    | hPa      | v2 only — barometer (where the device has one) |
+| `pinpoint`| 0          | 0          | 0          | event    | `event` = `pinpoint_N` |
+
+**Backwards compatibility:** v1 files contain only `accel`, `gyro`, and
+`pinpoint`. The analyser auto-detects the file generation and prints it
+in the report header. v1 files load and analyse exactly as before.
 
 ### Axis mapping (phone in portrait, screen facing rider)
 
@@ -142,6 +163,66 @@ python3 waytrace_merge.py ~/Downloads/ART-202605091*.csv
 See [MERGE.md](MERGE.md) for full details — when to use it, how the
 gap-closing works, what the seam markers mean.
 
+### `waytrace_strava.py` — fetch GPS from Strava
+
+Sensor recordings on the phone don't include GPS; the Strava app
+records GPS for the same ride in parallel. This script pulls the
+most recent activity via the Strava API and writes the standard
+`GPS-YYYYMMDDHHMM.gpx` file alongside it.
+
+```bash
+python3 waytrace_strava.py --auth          # one-time browser OAuth
+python3 waytrace_strava.py --latest        # → ~/Downloads/GPS-*.gpx
+python3 waytrace_strava.py --activity-id N # specific activity by id
+```
+
+First-time setup (Strava API app creation, ~3 minutes) is in
+[STRAVA.md](STRAVA.md).
+
+### `waytrace_locate.py` — pin road problems to actual streets
+
+Combines an ART sensor CSV with its matching Strava GPX. Aligns by
+wall-clock time, detects bad spots (RMS vibration + jerk peaks +
+recorded bump events), and plots them on a map of the route.
+
+```bash
+python3 waytrace_locate.py ~/Downloads/ART-YYYYMMDDHHMM.csv \
+                           ~/Downloads/GPS-YYYYMMDDHHMM.gpx \
+                           [--chair NAME]
+```
+
+The optional `--chair NAME` argument loads a per-chair calibration
+profile from `~/.config/waytrace/chairs/<NAME>.json` if one exists.
+See [CALIBRATION.md](CALIBRATION.md) for the 5-minute protocol.
+
+Speed normalisation (Wolf 2005): bad spots crossed at 0.8–1.5 m/s are
+ranked in the main table; spots crossed outside that range are listed
+separately as "out-of-range hotspots" — useful as a sanity check but
+excluded from cross-segment ranking because uncontrolled speed is a
+major confound.
+
+Outputs (in the same folder as the ART file):
+
+- `LOC-YYYYMMDDHHMM.png` — route on a map, colored by road roughness,
+  numbered pins on the top-10 worst in-range spots
+- `LOC-YYYYMMDDHHMM.txt` — ranked text list with lat/lon coordinates,
+  speed-at-cross for each segment, and the out-of-range section
+
+### `waytrace_calibrate.py` — derive a per-chair calibration profile
+
+One ~5-minute recording with seven pinpoint taps at known moments
+produces a per-chair JSON profile in
+`~/.config/waytrace/chairs/<chair-id>.json`. Used by `waytrace_locate.py`
+via `--chair` to subtract chair baseline and (eventually) anchor
+cross-chair comparisons after a chair change.
+
+```bash
+python3 waytrace_calibrate.py ~/Downloads/ART-CAL-*.csv \
+        --chair foldable-2026 --mount caster-fork
+```
+
+Full protocol in [CALIBRATION.md](CALIBRATION.md).
+
 ### `waytrace_fetch.py` — pull video from the camera
 
 Connects to the Akaso V50 X helmet camera over WiFi and downloads
@@ -157,7 +238,7 @@ python3 waytrace_fetch.py
 ### Required Python libraries
 
 ```bash
-pip install numpy scipy matplotlib pandas
+pip install numpy scipy matplotlib pandas requests
 ```
 
 ---
@@ -170,8 +251,13 @@ pip install numpy scipy matplotlib pandas
 python3 waytrace_merge.py ~/Downloads/ART-202605091751.csv \
                           ~/Downloads/ART-202605091852.csv
 
-# 3. Run the analysis on the merged (or single) CSV
+# 3. Run the signal analysis on the merged (or single) CSV
 python3 waytrace_analysis.py ~/Downloads/ART-MERGED-202605091949.csv
+
+# 4. Fetch GPS from Strava and pin bad spots to the actual street map
+python3 waytrace_strava.py --latest
+python3 waytrace_locate.py ~/Downloads/ART-MERGED-202605091949.csv \
+                           ~/Downloads/GPS-202605091751.gpx
 ```
 
 Output: a `.png` road-quality report and a `.txt` one-liner you can
@@ -188,7 +274,8 @@ paste into a session log or commit message.
 | `ANL-YYYYMMDDHHMM.png/txt`    | Analysis report from `waytrace_analysis.py` |
 | `WT-YYYYMMDDHHMM.apk`         | WayTrace Android build |
 | `RW-YYYYMMDDHHMM.mp4`         | Rear Window video from the helmet camera |
-| `GPS-YYYYMMDDHHMM.gpx`        | GPS track exported from Strava (manual) |
+| `GPS-YYYYMMDDHHMM.gpx`        | GPS track fetched by `waytrace_strava.py` |
+| `LOC-YYYYMMDDHHMM.png/txt`    | Location-tagged bad-spot report from `waytrace_locate.py` |
 
 Timestamps are local time — minute resolution, no seconds.
 

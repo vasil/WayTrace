@@ -101,6 +101,12 @@ class RecorderService : Service(), SensorEventListener {
     private var accelerometer: Sensor? = null
     private var gyroscope: Sensor? = null
 
+    // v2 additions: optional sensors. null when the device lacks one.
+    private var gravity:  Sensor? = null
+    private var magnet:   Sensor? = null
+    private var rotvec:   Sensor? = null
+    private var pressure: Sensor? = null
+
     var state = RecordingState.READY
         private set
 
@@ -127,6 +133,11 @@ class RecorderService : Service(), SensorEventListener {
     private val INTERVAL_NS = 8_333_333L  // 120 Hz
     private var lastAccelTime = 0L
     private var lastGyroTime = 0L
+
+    // v2 high-rate throttle timestamps. pressure is naturally low-rate.
+    private var lastGravityTime  = 0L
+    private var lastMagTime      = 0L
+    private var lastRotvecTime   = 0L
 
     private val EVENT_COOLDOWN_NS = 500_000_000L
     private var lastBumpTime = 0L
@@ -190,6 +201,15 @@ class RecorderService : Service(), SensorEventListener {
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
         accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         gyroscope     = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
+
+        // v2 sensors — silently null on devices that lack a given sensor.
+        gravity   = sensorManager.getDefaultSensor(Sensor.TYPE_GRAVITY)
+        // Calibrated magnetometer — Android's fusion already subtracts hard/soft-iron
+        // bias and returns three values that fit our CSV layout. The uncalibrated
+        // variant returns six values (raw + bias), of which only three fit our schema.
+        magnet    = sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)
+        rotvec    = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+        pressure  = sensorManager.getDefaultSensor(Sensor.TYPE_PRESSURE)
 
         val channel = NotificationChannel(CHANNEL_ID, "WayTrace Recording",
             NotificationManager.IMPORTANCE_LOW)
@@ -307,6 +327,7 @@ class RecorderService : Service(), SensorEventListener {
 
         bumpCount = 0; maxMagnitude = 0f; pinpointCount = 0
         lastAccelTime = 0L; lastGyroTime = 0L
+        lastGravityTime = 0L; lastMagTime = 0L; lastRotvecTime = 0L
         startTimeMs = System.currentTimeMillis(); elapsedMs = 0L
 
         wakeLock = (getSystemService(Context.POWER_SERVICE) as PowerManager)
@@ -389,6 +410,14 @@ class RecorderService : Service(), SensorEventListener {
     private fun registerSensors() {
         sensorManager.registerListener(this, accelerometer, 8333)
         sensorManager.registerListener(this, gyroscope,     8333)
+
+        // v2 high-rate IMU-class sensors at the same 8333 µs interval.
+        gravity ?.let { sensorManager.registerListener(this, it, 8333) }
+        magnet  ?.let { sensorManager.registerListener(this, it, 8333) }
+        rotvec  ?.let { sensorManager.registerListener(this, it, 8333) }
+
+        // Low-rate ambient sensor — default OS cadence is fine.
+        pressure?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) }
     }
 
     // ── Sensor events ─────────────────────────────────────────────────────────
@@ -413,6 +442,30 @@ class RecorderService : Service(), SensorEventListener {
                 lastGyroTime = nowNs
                 val ev = detectGyroEvent(nowNs, event.values)
                 writer?.println("${nowNs / 1_000_000L},gyro,${event.values[0]},${event.values[1]},${event.values[2]},$ev")
+            }
+
+            // ── v2 additions ────────────────────────────────────────────
+            Sensor.TYPE_GRAVITY -> {
+                if (lastGravityTime != 0L && nowNs - lastGravityTime < INTERVAL_NS) return
+                lastGravityTime = nowNs
+                writer?.println("${nowNs / 1_000_000L},gravity,${event.values[0]},${event.values[1]},${event.values[2]},")
+            }
+            Sensor.TYPE_MAGNETIC_FIELD -> {
+                if (lastMagTime != 0L && nowNs - lastMagTime < INTERVAL_NS) return
+                lastMagTime = nowNs
+                writer?.println("${nowNs / 1_000_000L},mag,${event.values[0]},${event.values[1]},${event.values[2]},")
+            }
+            Sensor.TYPE_ROTATION_VECTOR -> {
+                if (lastRotvecTime != 0L && nowNs - lastRotvecTime < INTERVAL_NS) return
+                lastRotvecTime = nowNs
+                // ROTATION_VECTOR values are [x, y, z, w, (accuracy)]. The
+                // quaternion's scalar component w rides in the event column;
+                // the CSV header stays 6 columns.
+                val w = if (event.values.size > 3) event.values[3] else 0f
+                writer?.println("${nowNs / 1_000_000L},rotvec,${event.values[0]},${event.values[1]},${event.values[2]},$w")
+            }
+            Sensor.TYPE_PRESSURE -> {
+                writer?.println("${nowNs / 1_000_000L},pressure,${event.values[0]},,,")
             }
         }
     }
