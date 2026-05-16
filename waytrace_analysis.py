@@ -47,13 +47,6 @@ RMS_UNCOMFORTABLE  = 1.15  # m/s²
 VDV_LOW      = 8.5   # m/s^1.75
 VDV_MODERATE = 17.0  # m/s^1.75
 
-# ISO 2631-5 single-event shock thresholds (total magnitude, gravity included)
-# At rest the phone reads ~9.8 m/s². These thresholds represent excess above baseline:
-# BUMP_ISO:       15.0 m/s²  =  ~5.2 m/s² excess  =  ~0.53g  →  "quite uncomfortable" (ISO 2631-1)
-# HEAVY_BUMP_ISO: 20.0 m/s²  = ~10.2 m/s² excess  =  ~1.04g  →  clinically significant shock (ISO 2631-5)
-BUMP_ISO       = 12.0  # m/s²
-HEAVY_BUMP_ISO = 18.0  # m/s²
-
 # Jerk threshold for discrete obstacles
 JERK_OBSTACLE_THRESHOLD = 50.0  # m/s³
 
@@ -64,26 +57,58 @@ def load_csv(path: Path) -> pd.DataFrame:
     return df
 
 
-# ── File generation detection (v1 vs v2) ─────────────────────────────────────
+# ── File generation detection (v1, v2, v3) ───────────────────────────────────
 #
-# v1 files contain only accel / gyro / pinpoint rows.
-# v2 files additionally contain gravity, rotvec, mag, linaccel, pressure,
-# step, or light rows. "v2-full" requires all three of gravity, rotvec, mag
-# — they are what enable world-frame transformation and ISO-compliant
-# axis-correct weightings. Anything in between is "v2-partial".
+# v1 (until 2026-05-14): accel, gyro, pinpoint only. Column 6 = "event"
+#                        held bump/heavy_bump/wheelie/tilt/fall from the app.
+# v2 (2026-05-14..-16) : adds gravity, rotvec, mag, pressure rows. Column 6
+#                        = "event" carried events on accel/gyro and quat-W
+#                        on rotvec rows.
+# v3 (from 2026-05-17) : same sensors as v2, but the app no longer detects
+#                        events. Column 6 is renamed "rotvec_w" — only rotvec
+#                        rows populate it (with the quaternion W component);
+#                        every other row leaves it blank. Pinpoint rows put
+#                        the pin counter in column 3 (x).
+#
+# The primary signal for which generation a file belongs to is the timestamp
+# embedded in its filename — ART-YYYYMMDDHHMM.csv. We additionally inspect
+# the CSV header to confirm, since the header is unambiguous for v3.
 
+import re
 V2_CORE_SENSORS = {'gravity', 'rotvec', 'mag'}
-# `linaccel`, `step`, `light` appeared in early v2 builds only; the loader
-# still accepts them silently so those recordings remain readable.
 V2_OPTIONAL_SENSORS = {'pressure', 'linaccel', 'step', 'light'}
+V3_CUTOFF_DT = datetime(2026, 5, 17, 0, 0)   # any ART file ≥ this datetime is v3
 
 
-def detect_generation(df: pd.DataFrame):
-    """Return (generation, sensors_present) for an already-loaded ART frame."""
+def detect_version_from_filename(path) -> str | None:
+    """Parse YYYYMMDDHHMM out of ART-*.csv filename → 'v1' / 'v2' / 'v3' / None."""
+    m = re.search(r'(\d{12})', Path(path).name)
+    if not m:
+        return None
+    try:
+        dt = datetime.strptime(m.group(1), '%Y%m%d%H%M')
+    except ValueError:
+        return None
+    if dt < datetime(2026, 5, 14):
+        return 'v1'
+    if dt < V3_CUTOFF_DT:
+        return 'v2'
+    return 'v3'
+
+
+def detect_generation(df: pd.DataFrame, path=None):
+    """Return (generation, sensors_present) — prefers CSV header + sensors, falls
+    back to filename date when content is ambiguous."""
     sensors_present = set(df['sensor'].dropna().unique())
+    cols = [c.strip() for c in df.columns]
+    # Header rename is the unambiguous v3 marker.
+    if 'rotvec_w' in cols:
+        return 'v3', sensors_present
     v2_core_present = V2_CORE_SENSORS & sensors_present
     if not v2_core_present and not (V2_OPTIONAL_SENSORS & sensors_present):
-        return 'v1', sensors_present
+        # No v2 sensors → either v1 or a very short v3 with only accel/gyro.
+        fn = detect_version_from_filename(path) if path else None
+        return (fn or 'v1'), sensors_present
     if V2_CORE_SENSORS.issubset(sensors_present):
         return 'v2-full', sensors_present
     return 'v2-partial', sensors_present
@@ -91,6 +116,10 @@ def detect_generation(df: pd.DataFrame):
 
 def generation_banner(gen: str, sensors_present: set) -> str:
     """One-line description of file precision tier, for report headers."""
+    if gen == 'v3':
+        extras = sensors_present - {'accel', 'gyro', 'pinpoint'} - V2_CORE_SENSORS
+        extra_note = f" + {','.join(sorted(extras))}" if extras else ""
+        return f"v3 (raw recording, offline event detection; gravity + rotvec + mag{extra_note})"
     if gen == 'v2-full':
         extras = sensors_present - {'accel', 'gyro', 'pinpoint'} - V2_CORE_SENSORS
         extra_note = f" + {','.join(sorted(extras))}" if extras else ""
@@ -99,6 +128,45 @@ def generation_banner(gen: str, sensors_present: set) -> str:
         missing = V2_CORE_SENSORS - sensors_present
         return f"v2-partial — missing {','.join(sorted(missing))}; using legacy Y-axis-vertical approximation"
     return "v1 (accel + gyro only) — legacy Y-axis-vertical approximation"
+
+
+# ── Offline event detection — v3 and later have no events in the CSV ──────────
+#
+# These thresholds match the SRS and the previous in-app values. They run on
+# every generation so reports across v1/v2/v3 are produced by the same logic.
+# Tune here — no APK rebuild needed.
+
+BUMP_MAG       = 12.0   # m/s² total magnitude (gravity-included)
+HEAVY_BUMP_MAG = 18.0   # m/s²
+ANGULAR_RATE   = 3.0    # rad/s for wheelie (Z_gyro) and tilt (X_gyro)
+EVENT_COOLDOWN_S = 0.5  # mirror the in-app cooldown so counts stay comparable
+
+
+def detect_events_offline(accel: pd.DataFrame, gyro: pd.DataFrame) -> pd.DataFrame:
+    """Re-derive bump/heavy_bump/wheelie/tilt events from raw magnitudes.
+    Returns a DataFrame with columns: t_s, kind. Empty if no events."""
+    events = []
+    last_accel_t = -10.0
+    for t, m in zip(accel['t_s'].values, accel['magnitude'].values):
+        if m > HEAVY_BUMP_MAG and (t - last_accel_t) > EVENT_COOLDOWN_S:
+            events.append((t, 'heavy_bump'))
+            last_accel_t = t
+        elif m > BUMP_MAG and (t - last_accel_t) > EVENT_COOLDOWN_S:
+            events.append((t, 'bump'))
+            last_accel_t = t
+    if not gyro.empty:
+        last_w = -10.0
+        last_tilt = -10.0
+        for t, x, z in zip(gyro['t_s'].values, gyro['x'].values, gyro['z'].values):
+            if abs(z) > ANGULAR_RATE and (t - last_w) > EVENT_COOLDOWN_S:
+                events.append((t, 'wheelie'))
+                last_w = t
+            if abs(x) > ANGULAR_RATE and (t - last_tilt) > EVENT_COOLDOWN_S:
+                events.append((t, 'tilt'))
+                last_tilt = t
+    if not events:
+        return pd.DataFrame(columns=['t_s', 'kind'])
+    return pd.DataFrame(events, columns=['t_s', 'kind']).sort_values('t_s').reset_index(drop=True)
 
 
 def split_sensors(df: pd.DataFrame):
@@ -250,9 +318,9 @@ def plot_report(accel, freqs, psd, dom_band, band_power,
                 f_stft, t_stft, stft_mag,
                 t_jerk, jerk, obstacles,
                 stats, rms_full, vdv, vdv_risk, iri, iri_condition,
-                session_name, out_path):
+                events, session_name, out_path):
 
-    bump_times = accel[accel['event'] == 'bump']['t_s'].values
+    bump_times = events[events['kind'] == 'bump']['t_s'].values if not events.empty else np.array([])
 
     fig = plt.figure(figsize=(18, 14), facecolor='#1a1a2e')
     fig.suptitle(f'WayTrace Road Quality Report — {session_name}',
@@ -326,9 +394,9 @@ def plot_report(accel, freqs, psd, dom_band, band_power,
     ax5.set_facecolor(ax_style['facecolor'])
     ax5.axis('off')
 
-    bump_count       = len(accel[accel['event'] == 'bump'])
-    heavy_bump_count = len(accel[accel['event'] == 'heavy_bump'])
-    tilt_count       = len(accel[accel['event'].isin(['tilt', 'wheelie', 'fall'])])
+    bump_count       = int((events['kind'] == 'bump').sum()) if not events.empty else 0
+    heavy_bump_count = int((events['kind'] == 'heavy_bump').sum()) if not events.empty else 0
+    tilt_count       = int(events['kind'].isin(['tilt', 'wheelie']).sum()) if not events.empty else 0
 
     summary = [
         ['Metric', 'Value', '', 'Metric', 'Value'],
@@ -395,7 +463,7 @@ def main():
         print("Not enough accelerometer data.")
         sys.exit(1)
 
-    generation, sensors_present = detect_generation(df)
+    generation, sensors_present = detect_generation(df, csv_path)
     print(f"File generation: {generation_banner(generation, sensors_present)}")
     print(f"Rows loaded   : {len(df)} total ({len(accel)} accel, {len(gyro)} gyro)")
     print(f"Duration      : {accel['t_s'].iloc[-1]:.1f} s")
@@ -410,28 +478,21 @@ def main():
     iri, iri_condition, _               = compute_iri(accel)
     stats                               = compute_stats(accel)
 
-    # Count from logged labels (recorded by app)
-    bump_logged       = len(accel[accel['event'] == 'bump'])
-    heavy_bump_logged = len(accel[accel['event'] == 'heavy_bump'])
-
-    # Re-evaluate from raw magnitude using ISO thresholds (independent of app version)
-    mag = accel['magnitude'].values
-    bump_count       = int(np.sum(
-        (mag >= BUMP_ISO) & (mag < HEAVY_BUMP_ISO) &
-        (np.diff(np.concatenate([[0], (mag >= BUMP_ISO).astype(int)])) == 1)
-    ))
-    heavy_bump_count = int(np.sum(
-        (mag >= HEAVY_BUMP_ISO) &
-        (np.diff(np.concatenate([[0], (mag >= HEAVY_BUMP_ISO).astype(int)])) == 1)
-    ))
+    # Offline event detection — works the same for v1, v2, and v3 files.
+    events = detect_events_offline(accel, gyro)
+    bump_count       = int((events['kind'] == 'bump').sum())
+    heavy_bump_count = int((events['kind'] == 'heavy_bump').sum())
+    wheelie_count    = int((events['kind'] == 'wheelie').sum())
+    tilt_count       = int((events['kind'] == 'tilt').sum())
 
     # Console summary
     print(f"\nRMS           : {rms_full:.3f} m/s²")
     print(f"VDV           : {vdv:.2f} m/s^1.75  →  {vdv_risk} health risk")
     print(f"IRI estimate  : {iri:.1f} m/km  →  {iri_condition}")
     print(f"Dominant freq : {dom_band}")
-    print(f"Bumps ≥{BUMP_ISO} m/s²       : {bump_count}  [logged by app: {bump_logged}]")
-    print(f"Heavy bumps ≥{HEAVY_BUMP_ISO} m/s²  : {heavy_bump_count}  [logged by app: {heavy_bump_logged}]")
+    print(f"Bumps ≥{BUMP_MAG} m/s²       : {bump_count}")
+    print(f"Heavy bumps ≥{HEAVY_BUMP_MAG} m/s²  : {heavy_bump_count}")
+    print(f"Wheelies / tilts (≥{ANGULAR_RATE} rad/s): {wheelie_count} / {tilt_count}")
     print(f"Jerk obstacles: {len(obstacles)}")
     print(f"Max magnitude : {stats['max']:.2f} m/s²")
     print(f"p95 magnitude : {stats['p95']:.2f} m/s²")
@@ -464,7 +525,7 @@ def main():
                 f_stft, t_stft, stft_mag,
                 t_jerk, jerk, obstacles,
                 stats, rms_full, vdv, vdv_risk, iri, iri_condition,
-                session_name, png_path)
+                events, session_name, png_path)
 
     print(f"Done. Report saved to:\n  {png_path}\n  {txt_path}")
 

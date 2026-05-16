@@ -35,8 +35,6 @@ import java.io.PrintWriter
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import kotlin.math.abs
-import kotlin.math.sqrt
 
 class RecorderService : Service(), SensorEventListener {
 
@@ -59,8 +57,6 @@ class RecorderService : Service(), SensorEventListener {
             .putString("current_file_name", currentFileName)
             .putLong("session_start_time", startTimeMs)
             .putLong("elapsed_ms", elapsedMs)
-            .putInt("bump_count", bumpCount)
-            .putFloat("max_magnitude", maxMagnitude)
             .putInt("pinpoint_count", pinpointCount)
             .putString("start_display_time", startDisplayTime)
             .apply()
@@ -73,8 +69,6 @@ class RecorderService : Service(), SensorEventListener {
         currentFileName  = prefs.getString("current_file_name", "") ?: ""
         startTimeMs      = prefs.getLong("session_start_time", 0L)
         elapsedMs        = prefs.getLong("elapsed_ms", 0L)
-        bumpCount        = prefs.getInt("bump_count", 0)
-        maxMagnitude     = prefs.getFloat("max_magnitude", 0f)
         pinpointCount    = prefs.getInt("pinpoint_count", 0)
         startDisplayTime = prefs.getString("start_display_time", "") ?: ""
 
@@ -139,16 +133,6 @@ class RecorderService : Service(), SensorEventListener {
     private var lastMagTime      = 0L
     private var lastRotvecTime   = 0L
 
-    private val EVENT_COOLDOWN_NS = 500_000_000L
-    private var lastBumpTime = 0L
-    private var lastFallTime = 0L
-    private var lastWheelieTime = 0L
-    private var lastTiltTime = 0L
-
-    var bumpCount = 0
-        private set
-    var maxMagnitude = 0f
-        private set
     var elapsedMs = 0L
         private set
     var pinpointCount = 0
@@ -319,13 +303,13 @@ class RecorderService : Service(), SensorEventListener {
                 writer = PrintWriter(FileWriter(currentFile!!), true)
             }
             currentFileName = fileName
-            writer!!.println("timestamp_ms,sensor,x,y,z,event")
+            writer!!.println("timestamp_ms,sensor,x,y,z,rotvec_w")
         } catch (e: Exception) {
             Log.e("WayTrace", "startRecording failed: ${e.message}", e)
             return
         }
 
-        bumpCount = 0; maxMagnitude = 0f; pinpointCount = 0
+        pinpointCount = 0
         lastAccelTime = 0L; lastGyroTime = 0L
         lastGravityTime = 0L; lastMagTime = 0L; lastRotvecTime = 0L
         startTimeMs = System.currentTimeMillis(); elapsedMs = 0L
@@ -401,7 +385,8 @@ class RecorderService : Service(), SensorEventListener {
         if (state != RecordingState.RECORDING && state != RecordingState.PAUSED) return
         pinpointCount++
         val tsMs = SystemClock.elapsedRealtime()
-        writer?.println("$tsMs,pinpoint,0.0,0.0,0.0,pinpoint_$pinpointCount")
+        // Pinpoint row format (v3): col 3 = N (the pinpoint counter); cols 4,5,6 = 0.
+        writer?.println("$tsMs,pinpoint,$pinpointCount,0,0,")
         saveState()
         updateNotification()
         onStateChanged?.invoke()
@@ -422,6 +407,8 @@ class RecorderService : Service(), SensorEventListener {
 
     // ── Sensor events ─────────────────────────────────────────────────────────
 
+    // v3: pure raw recording — no event detection in the app.
+    // bump/heavy_bump/wheelie/tilt are computed offline by the Python tools.
     override fun onSensorChanged(event: SensorEvent) {
         if (state != RecordingState.RECORDING) return
         val nowNs = event.timestamp
@@ -429,22 +416,13 @@ class RecorderService : Service(), SensorEventListener {
             Sensor.TYPE_ACCELEROMETER -> {
                 if (lastAccelTime != 0L && nowNs - lastAccelTime < INTERVAL_NS) return
                 lastAccelTime = nowNs
-                val mag = sqrt(event.values[0] * event.values[0] +
-                        event.values[1] * event.values[1] +
-                        event.values[2] * event.values[2])
-                if (mag > maxMagnitude) maxMagnitude = mag
-                val ev = detectAccelEvent(nowNs, event.values, mag)
-                if (ev == "bump" || ev == "heavy_bump") bumpCount++
-                writer?.println("${nowNs / 1_000_000L},accel,${event.values[0]},${event.values[1]},${event.values[2]},$ev")
+                writer?.println("${nowNs / 1_000_000L},accel,${event.values[0]},${event.values[1]},${event.values[2]},")
             }
             Sensor.TYPE_GYROSCOPE -> {
                 if (lastGyroTime != 0L && nowNs - lastGyroTime < INTERVAL_NS) return
                 lastGyroTime = nowNs
-                val ev = detectGyroEvent(nowNs, event.values)
-                writer?.println("${nowNs / 1_000_000L},gyro,${event.values[0]},${event.values[1]},${event.values[2]},$ev")
+                writer?.println("${nowNs / 1_000_000L},gyro,${event.values[0]},${event.values[1]},${event.values[2]},")
             }
-
-            // ── v2 additions ────────────────────────────────────────────
             Sensor.TYPE_GRAVITY -> {
                 if (lastGravityTime != 0L && nowNs - lastGravityTime < INTERVAL_NS) return
                 lastGravityTime = nowNs
@@ -458,9 +436,8 @@ class RecorderService : Service(), SensorEventListener {
             Sensor.TYPE_ROTATION_VECTOR -> {
                 if (lastRotvecTime != 0L && nowNs - lastRotvecTime < INTERVAL_NS) return
                 lastRotvecTime = nowNs
-                // ROTATION_VECTOR values are [x, y, z, w, (accuracy)]. The
-                // quaternion's scalar component w rides in the event column;
-                // the CSV header stays 6 columns.
+                // ROTATION_VECTOR returns [x, y, z, w, (accuracy)]. Only rotvec
+                // rows populate column 6 — the quaternion's W (rotvec_w).
                 val w = if (event.values.size > 3) event.values[3] else 0f
                 writer?.println("${nowNs / 1_000_000L},rotvec,${event.values[0]},${event.values[1]},${event.values[2]},$w")
             }
@@ -468,29 +445,6 @@ class RecorderService : Service(), SensorEventListener {
                 writer?.println("${nowNs / 1_000_000L},pressure,${event.values[0]},,,")
             }
         }
-    }
-
-    private fun detectAccelEvent(nowNs: Long, v: FloatArray, mag: Float): String {
-        if (mag > 20.0f && nowNs - lastBumpTime > EVENT_COOLDOWN_NS) {
-            lastBumpTime = nowNs; return "heavy_bump"
-        }
-        if (mag > 15.0f && nowNs - lastBumpTime > EVENT_COOLDOWN_NS) {
-            lastBumpTime = nowNs; return "bump"
-        }
-        if (v[1] < -15.0f && nowNs - lastFallTime > EVENT_COOLDOWN_NS) {
-            lastFallTime = nowNs; return "fall"
-        }
-        return ""
-    }
-
-    private fun detectGyroEvent(nowNs: Long, v: FloatArray): String {
-        if (abs(v[2]) > 3.0f && nowNs - lastWheelieTime > EVENT_COOLDOWN_NS) {
-            lastWheelieTime = nowNs; return "wheelie"
-        }
-        if (abs(v[0]) > 3.0f && nowNs - lastTiltTime > EVENT_COOLDOWN_NS) {
-            lastTiltTime = nowNs; return "tilt"
-        }
-        return ""
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}

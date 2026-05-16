@@ -50,34 +50,53 @@ restores to PAUSED so the same CSV file can be appended to.
 **File naming:** `ART-YYYYMMDDHHMM.csv` (Acceleration, Rotation, Time)
 saved to **Downloads** via the MediaStore API.
 
-### CSV format
+### CSV format (v3 — current build)
 
 Six columns, exactly:
 
 ```
-timestamp_ms,sensor,x,y,z,event
+timestamp_ms,sensor,x,y,z,rotvec_w
 ```
 
 | column | meaning |
 |---|---|
 | `timestamp_ms` | milliseconds since device boot |
-| `sensor`       | `accel`, `gyro`, `pinpoint` — and from v2: `gravity`, `mag`, `rotvec`, `pressure` |
+| `sensor`       | `accel`, `gyro`, `gravity`, `mag`, `rotvec`, `pressure`, `pinpoint` |
 | `x, y, z`      | meaning depends on `sensor` (see table below) |
-| `event`        | empty, or `bump`, `heavy_bump`, `wheelie`, `tilt`, `fall`, `pinpoint_N`. For `rotvec` rows: the quaternion's `w` component |
+| `rotvec_w`     | only populated on `rotvec` rows — quaternion W component. Empty otherwise. |
 
-| sensor    | x          | y          | z          | units    | notes |
-|---        |---         |---         |---         |---       |---    |
-| `accel`   | forward    | vertical   | lateral    | m/s²     | raw, gravity-included |
-| `gyro`    | roll       | yaw        | pitch      | rad/s    | |
-| `gravity` | gravity-x  | gravity-y  | gravity-z  | m/s²     | v2 only — software-fused gravity vector |
-| `mag`     | field-x    | field-y    | field-z    | µT       | v2 only — calibrated magnetometer (`TYPE_MAGNETIC_FIELD`) |
-| `rotvec`  | quat-x     | quat-y     | quat-z     | unit-quat| v2 only — `event` column carries quat-w |
-| `pressure`| hPa        | (empty)    | (empty)    | hPa      | v2 only — barometer (where the device has one) |
-| `pinpoint`| 0          | 0          | 0          | event    | `event` = `pinpoint_N` |
+| sensor    | x          | y          | z          | rotvec_w | units    | notes |
+|---        |---         |---         |---         |---       |---       |---    |
+| `accel`   | forward    | vertical   | lateral    | empty    | m/s²     | raw, gravity-included |
+| `gyro`    | roll       | yaw        | pitch      | empty    | rad/s    | |
+| `gravity` | gravity-x  | gravity-y  | gravity-z  | empty    | m/s²     | software-fused gravity vector |
+| `mag`     | field-x    | field-y    | field-z    | empty    | µT       | calibrated magnetometer (`TYPE_MAGNETIC_FIELD`) |
+| `rotvec`  | quat-x     | quat-y     | quat-z     | **W**    | unit-quat| 4-D orientation; W is the scalar component |
+| `pressure`| hPa        | (empty)    | (empty)    | empty    | hPa      | barometer (where the device has one) |
+| `pinpoint`| **N**      | 0          | 0          | empty    | counter  | `x = N` is the pinpoint counter (1, 2, 3…) |
 
-**Backwards compatibility:** v1 files contain only `accel`, `gyro`, and
-`pinpoint`. The analyser auto-detects the file generation and prints it
-in the report header. v1 files load and analyse exactly as before.
+**No event detection in v3.** From v3 on, the app records only raw sensor
+data. Events (`bump`, `heavy_bump`, `wheelie`, `tilt`) are detected
+**offline** by `waytrace_analysis.py` and `waytrace_locate.py` from the
+raw magnitudes. This means you can retune thresholds (or invent new
+event types) without rebuilding the APK.
+
+### Backwards compatibility
+
+The Python tools read **all three** schema generations and produce
+identical reports. The generation is inferred primarily from the
+`YYYYMMDDHHMM` timestamp in the filename, with the CSV header used to
+confirm.
+
+| generation | filename date range | column 6 | sensors | event detection |
+|---|---|---|---|---|
+| **v1** | before `2026-05-14` | `event` (bump/heavy_bump/wheelie/tilt/fall) | accel, gyro, pinpoint | in-app, written to col 6 |
+| **v2** | `2026-05-14` – `2026-05-16` | `event` (events + rotvec W) | + gravity, mag, rotvec, pressure | in-app, written to col 6 |
+| **v3** | from `2026-05-17` | `rotvec_w` (only W on rotvec rows) | same as v2 | offline, in Python tools |
+
+For v1 and v2 files the Python tools ignore the in-CSV event labels and
+re-compute them from raw magnitudes, so cross-generation counts are
+directly comparable.
 
 ### Axis mapping (phone in portrait, screen facing rider)
 

@@ -143,19 +143,21 @@ def analyze(input_path: Path):
         ("high / ambience",      5000, 10000),
     ]
     print("\nBand energy:")
-    total = float(np.trapz(P, f))
+    total = float(np.trapezoid(P, f))
     for name, lo, hi in bands:
         mask = (f >= lo) & (f <= hi)
-        e = float(np.trapz(P[mask], f[mask])) if mask.any() else 0.0
+        e = float(np.trapezoid(P[mask], f[mask])) if mask.any() else 0.0
         print(f"  {lo:>5}-{hi:<5} Hz  {name:<25}  {100*e/total:5.1f}% of total energy")
 
     # Find narrow peaks (mechanical-resonance candidates)
     log_P = 10 * np.log10(P + 1e-12)
     from scipy.ndimage import median_filter
-    baseline = median_filter(log_P, size=int(round(1.0 / (f[1] - f[0]))))
+    df_bin = f[1] - f[0]
+    base_win = max(int(round(20.0 / df_bin)), 5)   # ~20 Hz local median window
+    baseline = median_filter(log_P, size=base_win)
     above = log_P - baseline
     peaks, _ = sp_signal.find_peaks(above, height=5.0,
-                                     distance=int(round(20.0 / (f[1] - f[0]))))
+                                     distance=max(int(round(20.0 / df_bin)), 3))
     peaks = peaks[(f[peaks] >= 60) & (f[peaks] <= 5000)]
     print("\nNarrow peaks (≥5 dB above local baseline, 60–5000 Hz):")
     if len(peaks) == 0:
@@ -176,8 +178,14 @@ def analyze(input_path: Path):
         ax.axvline(f[p], color='red', ls=':', alpha=0.5)
         ax.annotate(f"{f[p]:.0f}", (f[p], P[p]), xytext=(2, 5),
                     textcoords='offset points', fontsize=9, color='red')
-    out_png = input_path.parent / f"{input_path.stem}-spectrum.png"
-    plt.savefig(out_png, dpi=130, bbox_inches='tight')
+    # Save next to the input if writable, else fall back to ~/Downloads
+    primary = input_path.parent / f"{input_path.stem}-spectrum.png"
+    try:
+        plt.savefig(primary, dpi=130, bbox_inches='tight')
+        out_png = primary
+    except OSError:
+        out_png = Path.home() / 'Downloads' / f"{input_path.stem}-spectrum.png"
+        plt.savefig(out_png, dpi=130, bbox_inches='tight')
     print(f"\nSpectrum plot: {out_png}")
 
 

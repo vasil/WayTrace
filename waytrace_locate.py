@@ -33,7 +33,7 @@ import matplotlib.pyplot as plt
 
 from waytrace_analysis import (
     SAMPLE_RATE, GRAVITY,
-    RMS_UNCOMFORTABLE, HEAVY_BUMP_ISO, BUMP_ISO,
+    RMS_UNCOMFORTABLE, BUMP_MAG, HEAVY_BUMP_MAG,
     load_csv, split_sensors,
     detect_generation, generation_banner,
 )
@@ -290,7 +290,9 @@ def find_bad_segments(accel: pd.DataFrame) -> tuple[list, list]:
     y_cent = y - GRAVITY
     dt     = 1.0 / SAMPLE_RATE
     jerk_y = np.concatenate(([0.0], np.abs(np.diff(y)) / dt))
-    events = accel['event'].fillna("").astype(str).values
+    # Per-window bump/heavy_bump now derived from raw magnitude, not from
+    # the (v1/v2-only) event column. Same logic across v1, v2, v3.
+    mag    = np.sqrt(accel['x'].values**2 + accel['y'].values**2 + accel['z'].values**2)
 
     win  = int(WINDOW_SECONDS * SAMPLE_RATE)
     step = win // 2
@@ -303,15 +305,15 @@ def find_bad_segments(accel: pd.DataFrame) -> tuple[list, list]:
         for i in range(chunk_start, chunk_end - win, step):
             cy   = y_cent[i:i+win]
             cj   = jerk_y[i:i+win]
-            cev  = events[i:i+win]
+            cm   = mag[i:i+win]
             # Sanity: skip any window where samples span more than 4*WINDOW
             # (means the chunk-boundary detection missed something)
             if t_s[i+win-1] - t_s[i] > 4 * WINDOW_SECONDS:
                 continue
             rms  = float(np.sqrt(np.mean(cy ** 2)))
             jmax = float(np.max(cj))
-            heavy = any('heavy_bump' in str(e) for e in cev)
-            soft  = any('bump' in str(e) for e in cev) and not heavy
+            heavy = bool(np.any(cm > HEAVY_BUMP_MAG))
+            soft  = bool(np.any(cm > BUMP_MAG)) and not heavy
             severity = (
                 0.6 * (rms / RMS_UNCOMFORTABLE) +
                 0.4 * (jmax / JERK_NORMALIZER) +
@@ -461,7 +463,7 @@ def main():
     print(f"Loading {art_path.name} ...")
     df = load_csv(art_path)
     accel, _ = split_sensors(df)
-    generation, sensors_present = detect_generation(df)
+    generation, sensors_present = detect_generation(df, art_path)
     print(f"   file generation: {generation_banner(generation, sensors_present)}")
     print(f"   accel rows: {len(accel)}   duration: {accel['t_s'].iloc[-1]:.1f}s")
 
