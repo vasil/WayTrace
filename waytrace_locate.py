@@ -30,12 +30,14 @@ import pandas as pd
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from matplotlib.colors import ListedColormap, BoundaryNorm
 
 from waytrace_analysis import (
     SAMPLE_RATE, GRAVITY,
     RMS_UNCOMFORTABLE, BUMP_MAG, HEAVY_BUMP_MAG,
     load_csv, split_sensors,
     detect_generation, generation_banner,
+    detect_events_offline,
 )
 
 LOCAL_TZ        = ZoneInfo("Europe/Skopje")
@@ -286,13 +288,13 @@ def _contiguous_chunks(t_s: np.ndarray):
 
 def find_bad_segments(accel: pd.DataFrame) -> tuple[list, list]:
     t_s    = accel['t_s'].values
-    y      = accel['y'].values
-    y_cent = y - GRAVITY
-    dt     = 1.0 / SAMPLE_RATE
-    jerk_y = np.concatenate(([0.0], np.abs(np.diff(y)) / dt))
-    # Per-window bump/heavy_bump now derived from raw magnitude, not from
-    # the (v1/v2-only) event column. Same logic across v1, v2, v3.
+    # Orientation-independent vibration intensity: deviation of the total
+    # acceleration magnitude from the gravity baseline. Works regardless of
+    # how the phone happens to be mounted (Y-up, Z-up, etc.).
     mag    = np.sqrt(accel['x'].values**2 + accel['y'].values**2 + accel['z'].values**2)
+    y_cent = mag - GRAVITY                          # signed deviation
+    dt     = 1.0 / SAMPLE_RATE
+    jerk_y = np.concatenate(([0.0], np.abs(np.diff(mag)) / dt))
 
     win  = int(WINDOW_SECONDS * SAMPLE_RATE)
     step = win // 2
@@ -368,8 +370,12 @@ def find_bad_segments(accel: pd.DataFrame) -> tuple[list, list]:
 
 def plot_map(gpx: GpxTrack, window_rows, segments: list[BadSegment],
              anchor_utc: datetime, accel_t0_s: float, out_png: Path,
-             title: str) -> None:
-    # Per-window RMS interpolated onto the GPX timeline to color the route
+             title: str,
+             accel: pd.DataFrame | None = None,
+             gyro: pd.DataFrame | None = None) -> None:
+    # Per-window RMS interpolated onto the GPX timeline to color the route.
+    # Points outside the CSV's time coverage stay NaN and are filtered out
+    # before plotting, so the route only shows color where sensor data exists.
     if window_rows:
         win_t_utc = [anchor_utc + timedelta(seconds=r['t_mid_s'] - accel_t0_s)
                      for r in window_rows]
@@ -377,11 +383,23 @@ def plot_map(gpx: GpxTrack, window_rows, segments: list[BadSegment],
     else:
         win_t_utc, win_rms = [], np.array([])
 
-    # For each GPS point, find the closest window-time RMS (or NaN if outside)
     if len(win_t_utc):
         win_secs = np.array([(t - win_t_utc[0]).total_seconds() for t in win_t_utc])
         gpx_secs = np.array([(t - win_t_utc[0]).total_seconds() for t in gpx.times])
-        gpx_rms  = np.interp(gpx_secs, win_secs, win_rms, left=np.nan, right=np.nan)
+        # Nearest-neighbor lookup, NOT linear interpolation. Each GPS point
+        # inherits the RMS of its closest 2-second window — no gradient
+        # blending across windows. So consecutive GPS points inside the same
+        # window share one colour, and a quiet stretch stays quiet right up
+        # to the window that contains the actual bump.
+        idx_right = np.searchsorted(win_secs, gpx_secs)
+        idx_right = np.clip(idx_right, 1, len(win_secs) - 1)
+        idx_left  = idx_right - 1
+        use_right = (gpx_secs - win_secs[idx_left]) > (win_secs[idx_right] - gpx_secs)
+        nearest_idx = np.where(use_right, idx_right, idx_left)
+        gpx_rms = win_rms[nearest_idx].astype(float)
+        # Points outside the CSV's time coverage stay uncoloured.
+        outside = (gpx_secs < win_secs[0]) | (gpx_secs > win_secs[-1])
+        gpx_rms[outside] = np.nan
     else:
         gpx_rms = np.full(len(gpx.times), np.nan)
 
@@ -390,16 +408,56 @@ def plot_map(gpx: GpxTrack, window_rows, segments: list[BadSegment],
     ax  = fig.add_subplot(gs[0, :3])
     tab = fig.add_subplot(gs[0, 3:]); tab.axis('off')
 
-    # Faint base route
+    # Faint base route (the full GPX path, including uncovered tail)
     ax.plot(gpx.lons, gpx.lats, color='#999', lw=1.2, alpha=0.4, zorder=1)
-    # Colored scatter by RMS
-    sc = ax.scatter(gpx.lons, gpx.lats, c=gpx_rms, cmap='RdYlGn_r',
-                    vmin=0.2, vmax=max(1.5, float(np.nanmax(gpx_rms)) if not np.isnan(np.nanmax(gpx_rms)) else 1.5),
-                    s=14, zorder=2)
-    cb = plt.colorbar(sc, ax=ax, fraction=0.025, pad=0.01)
-    cb.set_label("Vertical RMS  (m/s²)", fontsize=9)
 
-    # Bad-spot pins
+    # Discrete 3-band colour for the route, NOT a continuous gradient:
+    #   < ISO comfortable (0.5 m/s²)  → green   (smooth)
+    #   < ISO uncomfortable (1.15)    → yellow  (rough)
+    #   ≥ ISO uncomfortable           → red     (uncomfortable / damaging)
+    # Each GPS point falls into exactly one band — no time-interpolated fade.
+    valid = ~np.isnan(gpx_rms)
+    lons_arr = np.asarray(gpx.lons)
+    lats_arr = np.asarray(gpx.lats)
+    route_cmap = ListedColormap(['#2ca02c', '#ffcc00', '#d62728'])  # green / yellow / red
+    route_norm = BoundaryNorm([0.0, 0.5, RMS_UNCOMFORTABLE, 1e6], route_cmap.N)
+    sc = ax.scatter(lons_arr[valid], lats_arr[valid], c=gpx_rms[valid],
+                    cmap=route_cmap, norm=route_norm, s=14, zorder=2)
+    cb = plt.colorbar(sc, ax=ax, fraction=0.025, pad=0.01,
+                      ticks=[0.25, (0.5+RMS_UNCOMFORTABLE)/2, RMS_UNCOMFORTABLE + 0.5])
+    cb.ax.set_ylim(0.0, RMS_UNCOMFORTABLE + 1.0)
+    cb.ax.set_yticklabels([
+        f"smooth\n< 0.5",
+        f"rough\n0.5–{RMS_UNCOMFORTABLE}",
+        f"uncomfortable\n≥ {RMS_UNCOMFORTABLE}",
+    ])
+    cb.set_label("Vertical RMS band  (m/s²)", fontsize=9)
+
+    # Individual bump pins (one dot per detected event), drawn between the
+    # route and the numbered severe-segment markers.
+    if accel is not None and len(accel) > 0:
+        events = detect_events_offline(accel, gyro if gyro is not None else pd.DataFrame())
+        if not events.empty:
+            for kind, marker, fc, ec, sz in [
+                ('bump',       'o', '#ff9900', 'black', 30),
+                ('heavy_bump', 's', '#cc0000', 'black', 55),
+            ]:
+                ev = events[events['kind'] == kind]
+                if ev.empty:
+                    continue
+                ev_utc = [anchor_utc + timedelta(seconds=float(t) - accel_t0_s)
+                          for t in ev['t_s'].values]
+                ev_lats, ev_lons = [], []
+                for t_utc in ev_utc:
+                    lat, lon = gps_at(gpx.times, gpx.lats, gpx.lons, t_utc)
+                    if not np.isnan(lat):
+                        ev_lats.append(lat); ev_lons.append(lon)
+                if ev_lats:
+                    ax.scatter(ev_lons, ev_lats, marker=marker, c=fc,
+                               edgecolors=ec, linewidths=0.6, s=sz, zorder=2.5,
+                               label=f"{kind} ({len(ev_lats)})")
+
+    # Numbered pins for top-N severe segments (drawn last so they sit on top)
     for seg in segments[:TOP_N]:
         if not np.isnan(seg.lat):
             ax.plot(seg.lon, seg.lat, 'o', mfc='white', mec='black',
@@ -415,6 +473,9 @@ def plot_map(gpx: GpxTrack, window_rows, segments: list[BadSegment],
     ax.set_aspect('equal', adjustable='datalim')
     ax.set_title(title, fontsize=12)
     ax.grid(True, alpha=0.2)
+    handles, labels = ax.get_legend_handles_labels()
+    if handles:
+        ax.legend(handles, labels, loc='upper left', fontsize=8, framealpha=0.9)
 
     # Right panel: top-N table
     tab.set_title(f"Top {min(TOP_N, len(segments))} bad spots",
@@ -462,7 +523,7 @@ def main():
 
     print(f"Loading {art_path.name} ...")
     df = load_csv(art_path)
-    accel, _ = split_sensors(df)
+    accel, gyro = split_sensors(df)
     generation, sensors_present = detect_generation(df, art_path)
     print(f"   file generation: {generation_banner(generation, sensors_present)}")
     print(f"   accel rows: {len(accel)}   duration: {accel['t_s'].iloc[-1]:.1f}s")
@@ -516,7 +577,8 @@ def main():
     out_txt = out_dir / f"LOC-{stamp}.txt"
 
     title = f"{art_path.name} + {gpx_path.name}  —  {gpx.name}"
-    plot_map(gpx, window_rows, in_range_segs, anchor_utc, accel_t0, out_png, title)
+    plot_map(gpx, window_rows, in_range_segs, anchor_utc, accel_t0, out_png, title,
+             accel=accel, gyro=gyro)
 
     # Text report
     lines = []

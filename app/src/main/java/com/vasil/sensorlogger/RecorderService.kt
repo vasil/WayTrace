@@ -153,7 +153,12 @@ class RecorderService : Service(), SensorEventListener {
     }
 
     companion object {
-        const val CHANNEL_ID          = "waytrace_rec"
+        // CHANNEL_ID is bumped (was "waytrace_rec") to force MIUI to re-create
+        // the channel with HIGH importance. Notification-channel importance can
+        // only be set on first creation — a renamed channel is the only way to
+        // raise it after install. Without HIGH, MIUI throttles sensor delivery
+        // to ~2 Hz after 60 seconds even with the wake lock held.
+        const val CHANNEL_ID          = "waytrace_rec_v3_high"
         const val NOTIF_ID            = 1
         const val ACTION_PAUSE_RESUME = "com.vasil.sensorlogger.PAUSE_RESUME"
         const val ACTION_PINPOINT     = "com.vasil.sensorlogger.PINPOINT"
@@ -195,8 +200,18 @@ class RecorderService : Service(), SensorEventListener {
         rotvec    = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
         pressure  = sensorManager.getDefaultSensor(Sensor.TYPE_PRESSURE)
 
+        // IMPORTANCE_HIGH (was LOW) — required on MIUI to keep sensor
+        // delivery at full rate beyond the first 60 seconds of recording.
+        // Sound/vibration/lights disabled so the high-importance channel
+        // doesn't pester the user with every notification update.
         val channel = NotificationChannel(CHANNEL_ID, "WayTrace Recording",
-            NotificationManager.IMPORTANCE_LOW)
+            NotificationManager.IMPORTANCE_HIGH).apply {
+            description = "Foreground service for continuous sensor recording"
+            setSound(null, null)
+            enableVibration(false)
+            enableLights(false)
+            setShowBadge(false)
+        }
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
 
         val filter = IntentFilter().apply {
@@ -249,6 +264,9 @@ class RecorderService : Service(), SensorEventListener {
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setContentIntent(contentIntent)
             .setOngoing(true)
+            .setSilent(true)                // no sound on per-second updates
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .addAction(pauseResumeIcon, pauseResumeLabel,
                 pendingBroadcast(ACTION_PAUSE_RESUME))
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop",

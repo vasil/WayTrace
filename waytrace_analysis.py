@@ -173,6 +173,10 @@ def split_sensors(df: pd.DataFrame):
     accel = df[df['sensor'] == 'accel'].copy().reset_index(drop=True)
     gyro  = df[df['sensor'] == 'gyro'].copy().reset_index(drop=True)
     accel['magnitude'] = np.sqrt(accel['x']**2 + accel['y']**2 + accel['z']**2)
+    # Orientation-independent vibration intensity: total-acceleration magnitude
+    # minus the gravity baseline. At rest this is ~0 regardless of how the
+    # phone is mounted (Y-up, Z-up, tilted, etc.). RMS/VDV/IRI use this.
+    accel['vibration'] = np.abs(accel['magnitude'] - GRAVITY)
     accel['t_s'] = (accel['timestamp_ms'] - accel['timestamp_ms'].iloc[0]) / 1000.0
     if not gyro.empty:
         gyro['t_s'] = (gyro['timestamp_ms'] - df['timestamp_ms'].iloc[0]) / 1000.0
@@ -206,14 +210,14 @@ def dominant_band(freqs, psd):
 # ── Technique 2: RMS ─────────────────────────────────────────────────────────
 
 def compute_rms(accel: pd.DataFrame, window_s: float = 10.0):
-    mag = accel['magnitude'].values
-    rms_full = math.sqrt(np.mean(mag ** 2))
+    vib = accel['vibration'].values
+    rms_full = math.sqrt(np.mean(vib ** 2))
 
     window = int(window_s * SAMPLE_RATE)
     rms_windows = []
     t_windows = []
-    for i in range(0, len(mag) - window, window // 2):
-        chunk = mag[i:i + window]
+    for i in range(0, len(vib) - window, window // 2):
+        chunk = vib[i:i + window]
         rms_windows.append(math.sqrt(np.mean(chunk ** 2)))
         t_windows.append(accel['t_s'].iloc[i + window // 2])
 
@@ -228,9 +232,9 @@ def compute_rms(accel: pd.DataFrame, window_s: float = 10.0):
 # ── Technique 3: VDV ─────────────────────────────────────────────────────────
 
 def compute_vdv(accel: pd.DataFrame):
-    mag = accel['magnitude'].values
+    vib = accel['vibration'].values
     dt = 1.0 / SAMPLE_RATE
-    vdv = (np.sum(mag ** 4) * dt) ** 0.25
+    vdv = (np.sum(vib ** 4) * dt) ** 0.25
     if vdv < VDV_LOW:
         risk = 'LOW'
     elif vdv < VDV_MODERATE:
@@ -264,18 +268,17 @@ def compute_jerk(accel: pd.DataFrame):
 # ── Technique 6: IRI Estimation ───────────────────────────────────────────────
 
 def compute_iri(accel: pd.DataFrame):
-    # Simplified: high-pass filter Z_accel (lateral in our mounting acts as proxy
-    # for vertical relative to motion), compute windowed RMS, scale to IRI
-    z = accel['z'].values
+    # Orientation-independent: high-pass filter the centered magnitude
+    # (|accel| - g), windowed RMS, scaled by an empirical wheelchair factor.
+    vib = accel['vibration'].values
     b, a = signal.butter(2, 0.5 / (SAMPLE_RATE / 2), btype='high')
-    z_filtered = signal.filtfilt(b, a, z)
+    v_filtered = signal.filtfilt(b, a, vib)
 
     window = int(10 * SAMPLE_RATE)  # ~10 second windows
     iri_vals = []
-    for i in range(0, len(z_filtered) - window, window):
-        chunk = z_filtered[i:i + window]
+    for i in range(0, len(v_filtered) - window, window):
+        chunk = v_filtered[i:i + window]
         rms_chunk = math.sqrt(np.mean(chunk ** 2))
-        # Empirical calibration factor for wheelchair/smartphone setup
         iri_vals.append(rms_chunk * 12.0)
 
     iri_mean = float(np.mean(iri_vals)) if iri_vals else 0.0
