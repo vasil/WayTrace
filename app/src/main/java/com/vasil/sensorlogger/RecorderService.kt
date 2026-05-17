@@ -21,8 +21,12 @@ import android.os.Environment
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.HandlerThread
 import android.os.PowerManager
 import android.os.SystemClock
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.InetAddress
 import android.provider.MediaStore
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -135,6 +139,22 @@ class RecorderService : Service(), SensorEventListener {
 
     var elapsedMs = 0L
         private set
+
+    // ── OSI-019: live UDP streaming ───────────────────────────────────────
+    // Off by default. Enabled from MainActivity once the user finds the
+    // easter egg. Each sensor write is appended to a small buffer; when the
+    // buffer reaches LIVE_BATCH_SIZE rows we fire one UDP packet on the
+    // background thread. CSV write is unaffected.
+    @Volatile var liveModeEnabled: Boolean = false
+    @Volatile var liveTargetIp:    String  = "10.0.0.34"
+    @Volatile var liveTargetPort:  Int     = 54321
+    private var liveSocket:  DatagramSocket? = null
+    private var liveAddress: InetAddress?    = null
+    private var liveThread:  HandlerThread?  = null
+    private var liveHandler: Handler?        = null
+    private val liveBuffer:  MutableList<String> = ArrayList(64)
+    private val LIVE_BATCH_SIZE = 30   // ~100 ms at 60 Hz × 5 sensor streams
+    private val LIVE_HEADER     = "WTLIVE 1\n"
     var pinpointCount = 0
         private set
     var startDisplayTime = ""
@@ -404,7 +424,8 @@ class RecorderService : Service(), SensorEventListener {
         pinpointCount++
         val tsMs = SystemClock.elapsedRealtime()
         // Pinpoint row format (v3): col 3 = N (the pinpoint counter); cols 4,5,6 = 0.
-        writer?.println("$tsMs,pinpoint,$pinpointCount,0,0,")
+        val row = "$tsMs,pinpoint,$pinpointCount,0,0,"
+        writer?.println(row); liveQueue(row)
         saveState()
         updateNotification()
         onStateChanged?.invoke()
@@ -434,22 +455,26 @@ class RecorderService : Service(), SensorEventListener {
             Sensor.TYPE_ACCELEROMETER -> {
                 if (lastAccelTime != 0L && nowNs - lastAccelTime < INTERVAL_NS) return
                 lastAccelTime = nowNs
-                writer?.println("${nowNs / 1_000_000L},accel,${event.values[0]},${event.values[1]},${event.values[2]},")
+                val row = "${nowNs / 1_000_000L},accel,${event.values[0]},${event.values[1]},${event.values[2]},"
+                writer?.println(row); liveQueue(row)
             }
             Sensor.TYPE_GYROSCOPE -> {
                 if (lastGyroTime != 0L && nowNs - lastGyroTime < INTERVAL_NS) return
                 lastGyroTime = nowNs
-                writer?.println("${nowNs / 1_000_000L},gyro,${event.values[0]},${event.values[1]},${event.values[2]},")
+                val row = "${nowNs / 1_000_000L},gyro,${event.values[0]},${event.values[1]},${event.values[2]},"
+                writer?.println(row); liveQueue(row)
             }
             Sensor.TYPE_GRAVITY -> {
                 if (lastGravityTime != 0L && nowNs - lastGravityTime < INTERVAL_NS) return
                 lastGravityTime = nowNs
-                writer?.println("${nowNs / 1_000_000L},gravity,${event.values[0]},${event.values[1]},${event.values[2]},")
+                val row = "${nowNs / 1_000_000L},gravity,${event.values[0]},${event.values[1]},${event.values[2]},"
+                writer?.println(row); liveQueue(row)
             }
             Sensor.TYPE_MAGNETIC_FIELD -> {
                 if (lastMagTime != 0L && nowNs - lastMagTime < INTERVAL_NS) return
                 lastMagTime = nowNs
-                writer?.println("${nowNs / 1_000_000L},mag,${event.values[0]},${event.values[1]},${event.values[2]},")
+                val row = "${nowNs / 1_000_000L},mag,${event.values[0]},${event.values[1]},${event.values[2]},"
+                writer?.println(row); liveQueue(row)
             }
             Sensor.TYPE_ROTATION_VECTOR -> {
                 if (lastRotvecTime != 0L && nowNs - lastRotvecTime < INTERVAL_NS) return
@@ -457,19 +482,78 @@ class RecorderService : Service(), SensorEventListener {
                 // ROTATION_VECTOR returns [x, y, z, w, (accuracy)]. Only rotvec
                 // rows populate column 6 — the quaternion's W (rotvec_w).
                 val w = if (event.values.size > 3) event.values[3] else 0f
-                writer?.println("${nowNs / 1_000_000L},rotvec,${event.values[0]},${event.values[1]},${event.values[2]},$w")
+                val row = "${nowNs / 1_000_000L},rotvec,${event.values[0]},${event.values[1]},${event.values[2]},$w"
+                writer?.println(row); liveQueue(row)
             }
             Sensor.TYPE_PRESSURE -> {
-                writer?.println("${nowNs / 1_000_000L},pressure,${event.values[0]},,,")
+                val row = "${nowNs / 1_000_000L},pressure,${event.values[0]},,,"
+                writer?.println(row); liveQueue(row)
             }
         }
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
+    // ── OSI-019: live streaming control ───────────────────────────────────
+
+    fun enableLiveMode(ip: String, port: Int) {
+        liveTargetIp   = ip
+        liveTargetPort = port
+        if (liveThread == null) {
+            liveThread = HandlerThread("WTLiveSender").also { it.start() }
+            liveHandler = Handler(liveThread!!.looper)
+        }
+        liveHandler?.post {
+            try {
+                liveSocket  = DatagramSocket()
+                liveAddress = InetAddress.getByName(ip)
+                Log.i("WayTrace", "live mode ON -> $ip:$port")
+            } catch (e: Exception) {
+                Log.e("WayTrace", "live socket open failed: ${e.message}", e)
+            }
+        }
+        liveModeEnabled = true
+    }
+
+    fun disableLiveMode() {
+        liveModeEnabled = false
+        liveHandler?.post {
+            try { liveSocket?.close() } catch (_: Exception) {}
+            liveSocket = null
+            Log.i("WayTrace", "live mode OFF")
+        }
+        synchronized(liveBuffer) { liveBuffer.clear() }
+    }
+
+    /** Append a row to the live buffer; flush as a UDP packet when full. */
+    private fun liveQueue(row: String) {
+        if (!liveModeEnabled) return
+        val batch: List<String>?
+        synchronized(liveBuffer) {
+            liveBuffer.add(row)
+            if (liveBuffer.size < LIVE_BATCH_SIZE) return
+            batch = ArrayList(liveBuffer)
+            liveBuffer.clear()
+        }
+        liveHandler?.post {
+            val sock = liveSocket ?: return@post
+            val addr = liveAddress ?: return@post
+            try {
+                val payload = (LIVE_HEADER + batch!!.joinToString("\n") + "\n")
+                    .toByteArray(Charsets.US_ASCII)
+                sock.send(DatagramPacket(payload, payload.size, addr, liveTargetPort))
+            } catch (e: Exception) {
+                // UDP send failed (laptop not reachable / WiFi flapping). Don't
+                // crash; the next batch will try again. CSV write is unaffected.
+            }
+        }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         unregisterReceiver(actionReceiver)
         if (state == RecordingState.RECORDING || state == RecordingState.PAUSED) stopRecording()
+        disableLiveMode()
+        liveThread?.quitSafely(); liveThread = null
     }
 }

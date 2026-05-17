@@ -5,6 +5,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.content.SharedPreferences
 import android.content.res.ColorStateList
 import android.net.Uri
 import android.os.Bundle
@@ -16,7 +17,11 @@ import android.provider.Settings
 import android.view.View
 import android.view.WindowManager
 import android.widget.Button
+import android.widget.CheckBox
+import android.widget.EditText
+import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 
 class MainActivity : AppCompatActivity() {
@@ -37,6 +42,13 @@ class MainActivity : AppCompatActivity() {
             service = (binder as RecorderService.LocalBinder).getService()
             service!!.onStateChanged = { runOnUiThread { updateUI() } }
             bound = true
+            // Re-apply live mode setting if it was on before app restart
+            if (livePrefs.getBoolean(PREF_LIVE_UNLOCKED, false)
+                && livePrefs.getBoolean(PREF_LIVE_ENABLED, false)) {
+                val ip   = livePrefs.getString(PREF_LIVE_IP,   DEFAULT_LIVE_IP) ?: DEFAULT_LIVE_IP
+                val port = livePrefs.getInt(PREF_LIVE_PORT,    DEFAULT_LIVE_PORT)
+                service!!.enableLiveMode(ip, port)
+            }
             updateUI()
         }
         override fun onServiceDisconnected(name: ComponentName) { bound = false }
@@ -78,6 +90,8 @@ class MainActivity : AppCompatActivity() {
 
         btnPin.setOnClickListener { service?.pinpoint() }
 
+        installLiveModeEasterEgg()
+
         requestBatteryOptimizationExemption()
         startService(Intent(this, RecorderService::class.java))
         bindService(Intent(this, RecorderService::class.java), connection, Context.BIND_AUTO_CREATE)
@@ -94,6 +108,108 @@ class MainActivity : AppCompatActivity() {
         if (intent?.getBooleanExtra(RecorderService.EXTRA_STOP_DIALOG, false) == true) {
             showStopDialog()
         }
+    }
+
+    // ── OSI-019: Live Sonification easter egg ─────────────────────────────
+    //
+    // Hidden by default. Five long-presses on the status line within 10
+    // seconds reveal a 📡 icon prepended to the status text. Tapping the
+    // status while the icon is showing opens the IP/port/toggle dialog.
+    // The unlock state is persisted in SharedPreferences so it survives
+    // app restarts; long-pressing 5× again hides it.
+
+    private val livePrefs: SharedPreferences
+        get() = getSharedPreferences("waytrace_live", Context.MODE_PRIVATE)
+
+    private val PREF_LIVE_UNLOCKED = "live_unlocked"
+    private val PREF_LIVE_ENABLED  = "live_enabled"
+    private val PREF_LIVE_IP       = "live_ip"
+    private val PREF_LIVE_PORT     = "live_port"
+    private val DEFAULT_LIVE_IP    = "10.0.0.34"
+    private val DEFAULT_LIVE_PORT  = 54321
+
+    private var longPressCount = 0
+    private var longPressFirstAt = 0L
+
+    private fun installLiveModeEasterEgg() {
+        tvStatus.setOnLongClickListener {
+            val now = System.currentTimeMillis()
+            if (now - longPressFirstAt > 10_000) {
+                longPressCount   = 1
+                longPressFirstAt = now
+            } else {
+                longPressCount++
+            }
+            if (longPressCount >= 5) {
+                longPressCount = 0
+                val now_unlocked = !livePrefs.getBoolean(PREF_LIVE_UNLOCKED, false)
+                livePrefs.edit().putBoolean(PREF_LIVE_UNLOCKED, now_unlocked).apply()
+                if (!now_unlocked) {
+                    // Disabling: also turn live mode off so packets stop
+                    livePrefs.edit().putBoolean(PREF_LIVE_ENABLED, false).apply()
+                    service?.disableLiveMode()
+                    Toast.makeText(this, "live mode hidden", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this, "live mode unlocked — tap status to configure",
+                                   Toast.LENGTH_LONG).show()
+                }
+                updateUI()
+            } else {
+                Toast.makeText(this, "live mode ${longPressCount}/5",
+                               Toast.LENGTH_SHORT).show()
+            }
+            true
+        }
+        tvStatus.setOnClickListener {
+            if (livePrefs.getBoolean(PREF_LIVE_UNLOCKED, false)) {
+                showLiveModeDialog()
+            }
+        }
+        // Restore live mode if it was enabled before app restart
+        if (livePrefs.getBoolean(PREF_LIVE_UNLOCKED, false)
+            && livePrefs.getBoolean(PREF_LIVE_ENABLED, false)) {
+            // Service binds asynchronously — kick this in onServiceConnected too.
+        }
+    }
+
+    private fun showLiveModeDialog() {
+        val ip   = livePrefs.getString(PREF_LIVE_IP,   DEFAULT_LIVE_IP) ?: DEFAULT_LIVE_IP
+        val port = livePrefs.getInt(PREF_LIVE_PORT,    DEFAULT_LIVE_PORT)
+        val on   = livePrefs.getBoolean(PREF_LIVE_ENABLED, false)
+
+        val ipField   = EditText(this).apply { setText(ip);   hint = "laptop IP" }
+        val portField = EditText(this).apply { setText(port.toString()); hint = "port" }
+        val toggle    = CheckBox(this).apply { text = "live streaming ON"; isChecked = on }
+        val layout    = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(48, 24, 48, 24)
+            addView(ipField); addView(portField); addView(toggle)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("📡  Live Sonify")
+            .setView(layout)
+            .setPositiveButton("Save") { _, _ ->
+                val newIp   = ipField.text.toString().trim().ifEmpty { DEFAULT_LIVE_IP }
+                val newPort = portField.text.toString().toIntOrNull() ?: DEFAULT_LIVE_PORT
+                val newOn   = toggle.isChecked
+                livePrefs.edit()
+                    .putString(PREF_LIVE_IP, newIp)
+                    .putInt(PREF_LIVE_PORT, newPort)
+                    .putBoolean(PREF_LIVE_ENABLED, newOn)
+                    .apply()
+                val svc = service
+                if (svc != null) {
+                    if (newOn) svc.enableLiveMode(newIp, newPort) else svc.disableLiveMode()
+                }
+                updateUI()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun statusPrefix(): String {
+        if (!livePrefs.getBoolean(PREF_LIVE_UNLOCKED, false)) return ""
+        return if (livePrefs.getBoolean(PREF_LIVE_ENABLED, false)) "📡 " else "📡· "
     }
 
     private fun requestBatteryOptimizationExemption() {
@@ -142,7 +258,7 @@ class MainActivity : AppCompatActivity() {
                 btnToggle.setTextColor(0xFF00CC00.toInt())
                 btnStop.visibility = View.GONE
                 btnPin.visibility  = View.GONE
-                tvStatus.text = "Ready"
+                tvStatus.text = "${statusPrefix()}Ready"
             }
             RecordingState.RECORDING -> {
                 btnToggle.text = "PAUSE"
@@ -156,7 +272,7 @@ class MainActivity : AppCompatActivity() {
                 val s      = (svc?.elapsedMs ?: 0L) / 1000
                 val dur    = "%02d:%02d".format((s % 3600) / 60, s % 60)
                 val sizeMb = "%.1f".format((svc?.getFileSize() ?: 0L) / (1024.0 * 1024.0))
-                tvStatus.text = "${svc?.currentFileName ?: ""}  $dur  ${sizeMb}MB"
+                tvStatus.text = "${statusPrefix()}${svc?.currentFileName ?: ""}  $dur  ${sizeMb}MB"
             }
             RecordingState.PAUSED -> {
                 btnToggle.text = "RESUME"
@@ -170,7 +286,7 @@ class MainActivity : AppCompatActivity() {
                 val s      = (svc?.elapsedMs ?: 0L) / 1000
                 val dur    = "%02d:%02d".format((s % 3600) / 60, s % 60)
                 val sizeMb = "%.1f".format((svc?.getFileSize() ?: 0L) / (1024.0 * 1024.0))
-                tvStatus.text = "${svc?.currentFileName ?: ""}  $dur  ${sizeMb}MB"
+                tvStatus.text = "${statusPrefix()}${svc?.currentFileName ?: ""}  $dur  ${sizeMb}MB"
             }
             RecordingState.STOPPED -> {
                 btnToggle.text = "START"
@@ -181,7 +297,7 @@ class MainActivity : AppCompatActivity() {
                 val sizeKb = (svc?.getFileSize() ?: 0L) / 1024
                 val s      = (svc?.elapsedMs ?: 0L) / 1000
                 val dur    = "%02d:%02d".format((s % 3600) / 60, s % 60)
-                tvStatus.text = "${svc?.currentFileName ?: ""}  ${sizeKb}KB  $dur"
+                tvStatus.text = "${statusPrefix()}${svc?.currentFileName ?: ""}  ${sizeKb}KB  $dur"
             }
         }
     }
