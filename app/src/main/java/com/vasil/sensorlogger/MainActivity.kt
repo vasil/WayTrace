@@ -19,6 +19,8 @@ import android.view.WindowManager
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
+import android.util.DisplayMetrics
+import android.view.MotionEvent
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -128,48 +130,68 @@ class MainActivity : AppCompatActivity() {
     private val DEFAULT_LIVE_IP    = "10.0.0.34"
     private val DEFAULT_LIVE_PORT  = 54321
 
-    private var longPressCount = 0
-    private var longPressFirstAt = 0L
+    // Two-corner-tap gesture state. Accessibility-friendly: doesn't depend on
+    // tap counts (so no conflict with triple-tap-to-zoom). User taps the
+    // top-left corner, then the top-right corner, within 3 seconds.
+    private var firstCornerAt = 0L
+    private val CORNER_WINDOW_MS = 3_000L
 
     private fun installLiveModeEasterEgg() {
-        tvStatus.setOnLongClickListener {
-            val now = System.currentTimeMillis()
-            if (now - longPressFirstAt > 10_000) {
-                longPressCount   = 1
-                longPressFirstAt = now
-            } else {
-                longPressCount++
-            }
-            if (longPressCount >= 5) {
-                longPressCount = 0
-                val now_unlocked = !livePrefs.getBoolean(PREF_LIVE_UNLOCKED, false)
-                livePrefs.edit().putBoolean(PREF_LIVE_UNLOCKED, now_unlocked).apply()
-                if (!now_unlocked) {
-                    // Disabling: also turn live mode off so packets stop
-                    livePrefs.edit().putBoolean(PREF_LIVE_ENABLED, false).apply()
-                    service?.disableLiveMode()
-                    Toast.makeText(this, "live mode hidden", Toast.LENGTH_SHORT).show()
-                } else {
-                    Toast.makeText(this, "live mode unlocked — tap status to configure",
-                                   Toast.LENGTH_LONG).show()
-                }
-                updateUI()
-            } else {
-                Toast.makeText(this, "live mode ${longPressCount}/5",
-                               Toast.LENGTH_SHORT).show()
-            }
-            true
-        }
+        // Status line is now just the open-config tap (when unlocked).
         tvStatus.setOnClickListener {
             if (livePrefs.getBoolean(PREF_LIVE_UNLOCKED, false)) {
                 showLiveModeDialog()
             }
         }
-        // Restore live mode if it was enabled before app restart
-        if (livePrefs.getBoolean(PREF_LIVE_UNLOCKED, false)
-            && livePrefs.getBoolean(PREF_LIVE_ENABLED, false)) {
-            // Service binds asynchronously — kick this in onServiceConnected too.
+    }
+
+    /** Detect the corner-tap sequence at the activity level so it works
+     *  regardless of which view is touched. Returns false from
+     *  dispatchTouchEvent so the touch still reaches its target view. */
+    private fun handleCornerTap(ev: MotionEvent) {
+        if (ev.action != MotionEvent.ACTION_DOWN) return
+        val dm = DisplayMetrics()
+        windowManager.defaultDisplay.getMetrics(dm)
+        val w = dm.widthPixels
+        val h = dm.heightPixels
+        val cornerW = w / 4         // left/right corner is 1/4 of screen wide
+        val cornerH = h / 8         // top corner zone is 1/8 of screen tall
+        val x = ev.x.toInt()
+        val y = ev.y.toInt()
+        val inTopLeft  = (x < cornerW)         && (y < cornerH)
+        val inTopRight = (x > (w - cornerW))   && (y < cornerH)
+        val now = System.currentTimeMillis()
+        if (firstCornerAt == 0L || now - firstCornerAt > CORNER_WINDOW_MS) {
+            if (inTopLeft) {
+                firstCornerAt = now
+                Toast.makeText(this, "↗ now tap top-right corner",
+                               Toast.LENGTH_SHORT).show()
+            }
+            return
         }
+        // We have a recent top-left tap; check for top-right second tap
+        if (inTopRight) {
+            firstCornerAt = 0L
+            val newUnlocked = !livePrefs.getBoolean(PREF_LIVE_UNLOCKED, false)
+            livePrefs.edit().putBoolean(PREF_LIVE_UNLOCKED, newUnlocked).apply()
+            if (!newUnlocked) {
+                livePrefs.edit().putBoolean(PREF_LIVE_ENABLED, false).apply()
+                service?.disableLiveMode()
+                Toast.makeText(this, "live mode hidden", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(this, "live mode unlocked — tap status to configure",
+                               Toast.LENGTH_LONG).show()
+            }
+            updateUI()
+        } else if (!inTopLeft) {
+            // Tapped elsewhere within the window — reset, silently
+            firstCornerAt = 0L
+        }
+    }
+
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        handleCornerTap(ev)
+        return super.dispatchTouchEvent(ev)
     }
 
     private fun showLiveModeDialog() {

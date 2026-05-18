@@ -48,6 +48,19 @@ from waytrace_sonify import (
 
 # ── Audio backend ───────────────────────────────────────────────────────────
 
+def local_ip() -> str:
+    """Best-effort: find the IP of the interface that would reach the LAN.
+    No packet is actually sent — UDP connect() just selects a route."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    except Exception:
+        return "?"
+    finally:
+        s.close()
+
+
 class NullSynth:
     """Silent fallback when fluidsynth isn't available."""
     def program_select(self, *a, **k): pass
@@ -73,9 +86,13 @@ def make_synth(silent: bool):
     fs = fluidsynth.Synth()
     fs.start()                                  # platform-default audio driver
     sfid = fs.sfload(sf2_path)
-    fs.program_select(0, sfid, 0, PROG_MELODY)  # channel 0 = melody (flute)
-    fs.program_select(1, sfid, 0, PROG_BASS)    # channel 1 = bass
-    fs.program_select(9, sfid, 128, 0)          # channel 9 = drum kit (bank 128)
+    # Circus instrumentation:
+    #   ch 0 = Calliope (GM 82) — the steam-organ sound everyone hears as "circus"
+    #   ch 1 = Trombone (GM 57) — brassy oompah bass
+    #   ch 9 = drum kit
+    fs.program_select(0, sfid, 0, 82)
+    fs.program_select(1, sfid, 0, 57)
+    fs.program_select(9, sfid, 128, 0)
     print(f"[ok] fluidsynth started with FluidR3_GM.sf2", file=sys.stderr)
     return fs
 
@@ -110,7 +127,10 @@ class Receiver(threading.Thread):
         self.running = True
 
     def run(self):
+        ip = local_ip()
         print(f"[ok] listening on UDP 0.0.0.0:{self.port}", file=sys.stderr)
+        print(f"[ok] set the phone's Live Sonify target to: {ip}:{self.port}",
+              file=sys.stderr)
         while self.running:
             try:
                 data, addr = self.sock.recvfrom(8192)
@@ -163,13 +183,25 @@ def run_sonifier(rx: Receiver, synth, tick_hz: float = 4.0):
                     'wheelie': -10.0, 'tilt': -10.0}
     yaw_accumulator = 0.0
     last_print_ts = 0.0
+    # Track currently-held melody/bass notes so we can release them before
+    # the next noteon — otherwise voices pile up and fluidsynth's
+    # ringbuffer overflows after ~30 s.
+    prev_melody_notes: list[int] = []
+    prev_bass_note   = None
+    # State for accel-vs-brake distinction (delta of intensity per tick)
+    prev_intensity   = 0.0
+    last_event_t.update({'accel': -10.0, 'brake': -10.0, 'crash': -10.0})
+    # Reference gravity vector captured the first time we have a stable reading.
+    # Tilt deviations from this neutral pose modulate pitch bend + vibrato.
+    neutral_gravity: tuple | None = None
 
     while True:
         time.sleep(tick_dt)
         with rx.lock:
-            accel = list(rx.streams['accel'])
-            gyro  = list(rx.streams['gyro'])
-            pins  = list(rx.pinpoints)
+            accel   = list(rx.streams['accel'])
+            gyro    = list(rx.streams['gyro'])
+            gravity = list(rx.streams['gravity'])
+            pins    = list(rx.pinpoints)
             rx.pinpoints.clear()
         if not accel:
             continue
@@ -179,17 +211,62 @@ def run_sonifier(rx: Receiver, synth, tick_hz: float = 4.0):
         acc_win = [(t,x,y,z) for (t,x,y,z) in accel if t >= window_start]
         if not acc_win:
             continue
-        # Features
+        # Features — all orientation-independent.
         xs = np.array([a[1] for a in acc_win])
         ys = np.array([a[2] for a in acc_win])
         zs = np.array([a[3] for a in acc_win])
-        fwd = float(np.mean(xs))
-        lat = float(np.mean(zs))
+        # Subtract gravity vector (from the gravity sensor stream) to get the
+        # true motion of the phone, independent of how it's mounted. Without
+        # this, "forward acceleration" is buried under the constant 9.8 m/s²
+        # of gravity sitting on whichever axis the phone happens to use.
+        g_samples = [g for g in gravity if g[0] >= window_start]
+        if g_samples:
+            gx0 = float(np.mean([g[1] for g in g_samples]))
+            gy0 = float(np.mean([g[2] for g in g_samples]))
+            gz0 = float(np.mean([g[3] for g in g_samples]))
+        else:
+            gx0, gy0, gz0 = 0.0, 0.0, GRAVITY
+        lin_mags = np.sqrt((xs - gx0) ** 2 + (ys - gy0) ** 2 + (zs - gz0) ** 2)
+        intensity      = float(np.mean(lin_mags))   # smooth motion intensity
+        intensity_peak = float(np.max(lin_mags))    # current spike
+        # Keep vib (RMS of magnitude minus g) for backwards-compatible threshold logic
         mag = np.sqrt(xs**2 + ys**2 + zs**2)
         vib = float(np.sqrt(np.mean((np.abs(mag - GRAVITY))**2)))
+        # ── Tilt angle vs. neutral pose ──────────────────────────────────
+        # Capture the first stable gravity reading as "level/neutral". After
+        # that, the angle between current and neutral gravity tells us how
+        # much the chair is tipped back (wheelie) or banked (cornering).
+        ng_mag = (gx0*gx0 + gy0*gy0 + gz0*gz0) ** 0.5
+        if neutral_gravity is None and ng_mag > 5.0:
+            neutral_gravity = (gx0, gy0, gz0, ng_mag)
+            print(f"[ok] captured neutral gravity: "
+                  f"({gx0:+.2f},{gy0:+.2f},{gz0:+.2f})", file=sys.stderr)
+        tilt_rad = 0.0
+        if neutral_gravity is not None and ng_mag > 0.1:
+            nx, ny, nz, nm = neutral_gravity
+            cos_t = (gx0*nx + gy0*ny + gz0*nz) / (ng_mag * nm)
+            cos_t = max(-1.0, min(1.0, cos_t))
+            tilt_rad = float(np.arccos(cos_t))
+        # Pitch bend: 0 rad = no shift; π/2 rad = +2 semitones (max bend)
+        bend_amount = int(clip(tilt_rad / (np.pi / 2) * 8191, 0, 8191))
+        synth.pitch_bend(0, bend_amount)
+        # Modulation wheel: same scale → vibrato amount, the "wobble"
+        mod_amount = int(clip(tilt_rad / (np.pi / 2) * 127, 0, 127))
+        synth.cc(0, 1, mod_amount)
+
         gyro_win = [g for g in gyro if g[0] >= window_start]
-        yaw = float(np.mean([g[2] for g in gyro_win])) if gyro_win else 0.0
-        yaw_accumulator += yaw * tick_dt
+        # Signed yaw = projection of gyro vector onto gravity unit vector.
+        # When spinning in place around the vertical axis, this is the true
+        # clockwise/counter-clockwise rate, regardless of phone orientation.
+        g_mag = (gx0*gx0 + gy0*gy0 + gz0*gz0) ** 0.5
+        if g_mag > 0.1 and gyro_win:
+            gux, guy, guz = gx0/g_mag, gy0/g_mag, gz0/g_mag
+            yaw_signed = float(np.mean(
+                [gx*gux + gy*guy + gz*guz for (_, gx, gy, gz) in gyro_win]
+            ))
+        else:
+            yaw_signed = 0.0
+        yaw_accumulator += yaw_signed * tick_dt   # heading in radians, signed
 
         # ── Event detection (mirrors detect_events_offline) ──────────────
         for (t,x,y,z) in acc_win:
@@ -200,39 +277,102 @@ def run_sonifier(rx: Receiver, synth, tick_hz: float = 4.0):
             elif m > BUMP_MAG and (t - last_event_t['bump']) > EVENT_COOLDOWN_S:
                 synth.noteon(9, DRUM_BUMP, 100)
                 last_event_t['bump'] = t
+        # Orientation-independent rotation detection. Threshold lowered so
+        # gentle banking (caster wheels lift) is audible. Use cowbell + low
+        # tom at max velocity so the rotation drums cut through the flute
+        # melody instead of being drowned by the heavy-bump cymbal.
+        ROT_LIVE = 1.0  # rad/s (~57°/s) — sensitive enough for banking
+        DRUM_ROT_A = 56   # cowbell — distinctive, cuts through
+        DRUM_ROT_B = 41   # low floor tom — heavy, also cutting
+        gyro_max_mag = 0.0
         for (t,x,y,z) in gyro_win:
-            if abs(z) > ANGULAR_RATE and (t - last_event_t['wheelie']) > EVENT_COOLDOWN_S:
-                synth.noteon(9, DRUM_WHEELIE, 110)
-                last_event_t['wheelie'] = t
-            if abs(x) > ANGULAR_RATE and (t - last_event_t['tilt']) > EVENT_COOLDOWN_S:
-                synth.noteon(9, DRUM_TILT, 95)
-                last_event_t['tilt'] = t
+            m = (x*x + y*y + z*z) ** 0.5
+            if m > gyro_max_mag:
+                gyro_max_mag = m
+            if m > ROT_LIVE:
+                ax, ay, az = abs(x), abs(y), abs(z)
+                if ax > ay and ax > az:
+                    if (t - last_event_t['tilt']) > EVENT_COOLDOWN_S:
+                        synth.noteon(9, DRUM_ROT_B, 127)
+                        last_event_t['tilt'] = t
+                else:
+                    if (t - last_event_t['wheelie']) > EVENT_COOLDOWN_S:
+                        synth.noteon(9, DRUM_ROT_A, 127)
+                        last_event_t['wheelie'] = t
         for _ in pins:
             synth.noteon(9, DRUM_PINPOINT, 120)
 
         # ── Melody ────────────────────────────────────────────────────────
-        speed_proxy = abs(fwd)
-        rate = scale(speed_proxy, 0.0, 5.0, NOTE_RATE_SLOW, NOTE_RATE_FAST)
-        pitch_base = scale(fwd, -3.0, 3.0, PITCH_LOW + 12, PITCH_HIGH - 6)
-        velocity = int(clip(round(scale(vib, 0.05, 3.0, VEL_QUIET, VEL_LOUD)), 1, 127))
-        pan = int(clip(round(scale(lat, -2.0, 2.0, PAN_LEFT, PAN_RIGHT)), 0, 127))
+        # Pitch follows HEADING directly (sawtooth wrap): spinning right
+        # → melody climbs the keyboard; spinning left → melody descends.
+        # One full turn (2π rad) sweeps the entire flute range. The wrap
+        # at the ends is audible but musical — like a calliope glissando.
+        pitch_range = PITCH_HIGH - PITCH_LOW
+        sweep_per_rad = pitch_range / (2.0 * np.pi)
+        offset = (yaw_accumulator * sweep_per_rad) % pitch_range
+        pitch_from_heading = PITCH_LOW + offset
+        pitch_nudge        = scale(intensity, 0.0, 3.0, -3, 6)
+        pitch_base = pitch_from_heading + pitch_nudge
+        rate = scale(intensity, 0.0, 3.0, NOTE_RATE_SLOW, NOTE_RATE_FAST)
+        velocity = int(clip(round(scale(intensity_peak, 0.1, 5.0,
+                                        VEL_QUIET, VEL_LOUD)), 1, 127))
+        # Pan follows heading too — quarter turn pans full L→R
+        pan = int(clip(round(scale(np.sin(yaw_accumulator),
+                                   -1.0, 1.0, PAN_LEFT, PAN_RIGHT)), 0, 127))
         synth.cc(0, 10, pan)
-        scale_notes = SCALE_MINOR if yaw_accumulator < 0 else SCALE_MAJOR
+        # Direction of spin colours the harmony: right = major, left = minor
+        scale_notes = SCALE_MAJOR if yaw_signed >= 0 else SCALE_MINOR
         root = (36 + int(round(yaw_accumulator * 0.4))) % 12
+
+        # ── Accel vs brake vs crash punctuation ──────────────────────────
+        # Δ-intensity = sped-up vs slowed-down (orientation-independent).
+        # intensity_peak = the largest instantaneous spike in the window;
+        # door crashes / hard impacts blow past everything else and earn a
+        # crash cymbal regardless of direction.
+        delta_i = intensity - prev_intensity
+        if intensity_peak > 10.0 and (latest_t - last_event_t.get('crash', -10)) > EVENT_COOLDOWN_S:
+            synth.noteon(9, 49, 127)   # crash cymbal — door slam / hard impact
+            last_event_t['crash'] = latest_t
+        elif delta_i > 0.4 and (latest_t - last_event_t['accel']) > EVENT_COOLDOWN_S:
+            synth.noteon(9, 38, 127)   # acoustic snare — push forward!
+            last_event_t['accel'] = latest_t
+        elif delta_i < -0.4 and (latest_t - last_event_t['brake']) > EVENT_COOLDOWN_S:
+            synth.noteon(9, 47, 127)   # low-mid tom — braking thud
+            last_event_t['brake'] = latest_t
+        prev_intensity = intensity
         note = int(clip(quantize_to_scale(pitch_base, root, scale_notes),
                         PITCH_LOW, PITCH_HIGH))
-        synth.noteon(0, note, velocity)
+        # Release everything we held last tick
+        for n in prev_melody_notes:
+            synth.noteoff(0, n)
+        prev_melody_notes = []
+        # Spinning hard → triad stab. Right-spin = major (bright), left-spin
+        # = minor (tense). Both give the circus-organ "stab" feel.
+        if abs(yaw_signed) > 1.0:
+            third = 4 if yaw_signed >= 0 else 3   # major 3rd vs minor 3rd
+            chord = [note, note + third, note + 7]
+        else:
+            chord = [note]
+        for n in chord:
+            n = int(clip(n, 0, 127))
+            synth.noteon(0, n, velocity)
+            prev_melody_notes.append(n)
         # bass every other tick
         if int(latest_t / tick_dt) % 8 == 0:
             bass_note = int(clip(36 + root, 24, 60))
+            if prev_bass_note is not None:
+                synth.noteoff(1, prev_bass_note)
             synth.noteon(1, bass_note, 80)
+            prev_bass_note = bass_note
 
         # ── periodic log line ────────────────────────────────────────────
         if time.time() - last_print_ts > 1.0:
             since_pkt = time.time() - rx.last_packet_at
             print(f"  pkts={rx.packets_received:>5}  "
-                  f"vib={vib:5.2f}  fwd={fwd:+5.2f}  lat={lat:+5.2f}  "
-                  f"last_pkt={since_pkt:.1f}s ago", file=sys.stderr)
+                  f"i={intensity:4.2f}  pk={intensity_peak:5.2f}  "
+                  f"yaw={yaw_signed:+5.2f}  hdg={yaw_accumulator:+6.2f}  "
+                  f"tilt={np.degrees(tilt_rad):5.1f}°  "
+                  f"last_pkt={since_pkt:.1f}s", file=sys.stderr)
             last_print_ts = time.time()
 
 
