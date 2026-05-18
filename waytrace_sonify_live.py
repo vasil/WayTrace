@@ -131,6 +131,8 @@ class Receiver(threading.Thread):
         print(f"[ok] listening on UDP 0.0.0.0:{self.port}", file=sys.stderr)
         print(f"[ok] set the phone's Live Sonify target to: {ip}:{self.port}",
               file=sys.stderr)
+        print(f"[ok] to stop this sonifier from another terminal: kill-sonify",
+              file=sys.stderr)
         while self.running:
             try:
                 data, addr = self.sock.recvfrom(8192)
