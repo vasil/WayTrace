@@ -10,7 +10,11 @@ import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.hardware.Sensor
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
@@ -24,6 +28,8 @@ import android.os.Looper
 import android.os.HandlerThread
 import android.os.PowerManager
 import android.os.SystemClock
+import android.Manifest
+import androidx.core.content.ContextCompat
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -96,6 +102,8 @@ class RecorderService : Service(), SensorEventListener {
     }
 
     private lateinit var sensorManager: SensorManager
+    private var locationManager: LocationManager? = null
+    private var locationListener: LocationListener? = null
     private var accelerometer: Sensor? = null
     private var gyroscope: Sensor? = null
 
@@ -184,6 +192,20 @@ class RecorderService : Service(), SensorEventListener {
         const val ACTION_PINPOINT     = "com.vasil.sensorlogger.PINPOINT"
         const val ACTION_STOP_REQUEST = "com.vasil.sensorlogger.STOP_REQUEST"
         const val EXTRA_STOP_DIALOG   = "show_stop_dialog"
+
+        // Sensor batching — lets the on-chip FIFO buffer events so the CPU
+        // can sleep between drains. Critical for surviving MIUI's wakeup-
+        // abuse killer during long screen-off pushes.
+        const val SAMPLING_PERIOD_US           = 8333       // ~120 Hz request (OS caps to hw rate)
+        const val MAX_REPORT_LATENCY_US_OFFLINE = 5_000_000 // 5 s when only recording to CSV
+        const val MAX_REPORT_LATENCY_US_LIVE    =   200_000 // 0.2 s when OSI-019 streaming
+
+        // GPS keep-alive — 1 Hz, completely independent of the 60 Hz sensor stream.
+        // The location subscription itself is what earns the service MIUI's
+        // "user is tracking location" privilege — the recorded fixes are a
+        // useful side-effect to cross-check against Strava.
+        const val GPS_MIN_INTERVAL_MS = 1000L
+        const val GPS_MIN_DISTANCE_M  = 0f
     }
 
     private val actionReceiver = object : BroadcastReceiver() {
@@ -208,6 +230,7 @@ class RecorderService : Service(), SensorEventListener {
     override fun onCreate() {
         super.onCreate()
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
+        locationManager = getSystemService(Context.LOCATION_SERVICE) as? LocationManager
         accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         gyroscope     = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
 
@@ -219,6 +242,17 @@ class RecorderService : Service(), SensorEventListener {
         magnet    = sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)
         rotvec    = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
         pressure  = sensorManager.getDefaultSensor(Sensor.TYPE_PRESSURE)
+
+        // Log hardware FIFO depth so we can verify batching is actually
+        // hardware-backed on this device. FIFO=0 means the framework will
+        // silently fall back to non-batched delivery (no regression, but
+        // also no benefit from the maxReportLatencyUs parameter).
+        fun fifo(label: String, s: Sensor?) = if (s == null) "$label=none"
+            else "$label=${s.fifoReservedEventCount}/${s.fifoMaxEventCount}"
+        Log.i("WayTrace", "sensor FIFO depths (reserved/max): " +
+            "${fifo("accel", accelerometer)}  ${fifo("gyro", gyroscope)}  " +
+            "${fifo("gravity", gravity)}  ${fifo("magnet", magnet)}  " +
+            "${fifo("rotvec", rotvec)}  ${fifo("pressure", pressure)}")
 
         // IMPORTANCE_HIGH (was LOW) — required on MIUI to keep sensor
         // delivery at full rate beyond the first 60 seconds of recording.
@@ -366,6 +400,7 @@ class RecorderService : Service(), SensorEventListener {
 
     fun pauseRecording() {
         sensorManager.unregisterListener(this)
+        unregisterGps()
         timerHandler.removeCallbacks(timerRunnable)
         elapsedMs = System.currentTimeMillis() - startTimeMs
         wakeLock?.release(); wakeLock = null
@@ -408,6 +443,7 @@ class RecorderService : Service(), SensorEventListener {
 
     fun stopRecording() {
         sensorManager.unregisterListener(this)
+        unregisterGps()
         timerHandler.removeCallbacks(timerRunnable)
         if (state == RecordingState.RECORDING) elapsedMs = System.currentTimeMillis() - startTimeMs
         wakeLock?.release(); wakeLock = null
@@ -432,16 +468,70 @@ class RecorderService : Service(), SensorEventListener {
     }
 
     private fun registerSensors() {
-        sensorManager.registerListener(this, accelerometer, 8333)
-        sensorManager.registerListener(this, gyroscope,     8333)
+        // Batch latency depends on whether OSI-019 live streaming is running:
+        // long batch (5 s) when only writing to CSV — saves wakeups, beats MIUI;
+        // short batch (200 ms) when live-streaming so audio reacts in near-real-time.
+        val maxLatency = if (liveModeEnabled) MAX_REPORT_LATENCY_US_LIVE
+                         else                 MAX_REPORT_LATENCY_US_OFFLINE
 
-        // v2 high-rate IMU-class sensors at the same 8333 µs interval.
-        gravity ?.let { sensorManager.registerListener(this, it, 8333) }
-        magnet  ?.let { sensorManager.registerListener(this, it, 8333) }
-        rotvec  ?.let { sensorManager.registerListener(this, it, 8333) }
+        sensorManager.registerListener(this, accelerometer, SAMPLING_PERIOD_US, maxLatency)
+        sensorManager.registerListener(this, gyroscope,     SAMPLING_PERIOD_US, maxLatency)
 
-        // Low-rate ambient sensor — default OS cadence is fine.
-        pressure?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) }
+        // v2 high-rate IMU-class sensors at the same sampling interval.
+        gravity ?.let { sensorManager.registerListener(this, it, SAMPLING_PERIOD_US, maxLatency) }
+        magnet  ?.let { sensorManager.registerListener(this, it, SAMPLING_PERIOD_US, maxLatency) }
+        rotvec  ?.let { sensorManager.registerListener(this, it, SAMPLING_PERIOD_US, maxLatency) }
+
+        // Low-rate ambient sensor — default OS cadence is fine, but it can batch too.
+        pressure?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL, maxLatency) }
+
+        Log.i("WayTrace", "sensors registered: rate=${SAMPLING_PERIOD_US}µs " +
+            "batch=${maxLatency}µs (live=$liveModeEnabled)")
+
+        registerGps()
+    }
+
+    private fun registerGps() {
+        val lm = locationManager ?: return
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+                != PackageManager.PERMISSION_GRANTED) {
+            Log.w("WayTrace", "GPS keep-alive: ACCESS_FINE_LOCATION not granted; skipping")
+            return
+        }
+        if (locationListener == null) {
+            locationListener = LocationListener { loc -> onGpsFix(loc) }
+        }
+        try {
+            lm.requestLocationUpdates(
+                LocationManager.GPS_PROVIDER,
+                GPS_MIN_INTERVAL_MS,
+                GPS_MIN_DISTANCE_M,
+                locationListener!!,
+                Looper.getMainLooper()
+            )
+            Log.i("WayTrace", "GPS keep-alive subscribed @ 1 Hz")
+        } catch (e: SecurityException) {
+            Log.w("WayTrace", "GPS subscribe failed: ${e.message}")
+        } catch (e: IllegalArgumentException) {
+            // GPS provider absent on this device (very rare). Sensor recording continues.
+            Log.w("WayTrace", "GPS provider unavailable: ${e.message}")
+        }
+    }
+
+    private fun unregisterGps() {
+        val lm = locationManager ?: return
+        locationListener?.let {
+            try { lm.removeUpdates(it) } catch (_: Exception) {}
+        }
+        locationListener = null
+    }
+
+    private fun onGpsFix(loc: Location) {
+        if (state != RecordingState.RECORDING) return
+        val tsMs = SystemClock.elapsedRealtime()
+        // gps row schema: ts_ms,gps,lat,lon,alt,accuracy
+        val row = "$tsMs,gps,${loc.latitude},${loc.longitude},${loc.altitude},${loc.accuracy}"
+        writer?.println(row); liveQueue(row)
     }
 
     // ── Sensor events ─────────────────────────────────────────────────────────
@@ -513,6 +603,8 @@ class RecorderService : Service(), SensorEventListener {
             }
         }
         liveModeEnabled = true
+        // Drop sensor batch latency from 5 s to 0.2 s so live audio is responsive.
+        if (state == RecordingState.RECORDING) registerSensors()
     }
 
     fun disableLiveMode() {
@@ -523,6 +615,8 @@ class RecorderService : Service(), SensorEventListener {
             Log.i("WayTrace", "live mode OFF")
         }
         synchronized(liveBuffer) { liveBuffer.clear() }
+        // Raise sensor batch latency back to 5 s — saves wakeups when only recording.
+        if (state == RecordingState.RECORDING) registerSensors()
     }
 
     /** Append a row to the live buffer; flush as a UDP packet when full. */

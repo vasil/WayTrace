@@ -1,7 +1,12 @@
 package com.vasil.sensorlogger
 
+import android.Manifest
 import android.app.AlertDialog
 import android.content.ComponentName
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
@@ -95,6 +100,7 @@ class MainActivity : AppCompatActivity() {
         installLiveModeEasterEgg()
 
         requestBatteryOptimizationExemption()
+        ensureLocationPermissions()
         startService(Intent(this, RecorderService::class.java))
         bindService(Intent(this, RecorderService::class.java), connection, Context.BIND_AUTO_CREATE)
         handleIntent(intent)
@@ -240,6 +246,45 @@ class MainActivity : AppCompatActivity() {
             startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
                 data = Uri.parse("package:$packageName")
             })
+        }
+    }
+
+    // GPS keep-alive: gives the recorder service the "user is tracking
+    // location" privilege class, which MIUI is reluctant to kill. Two-step
+    // because Android requires FINE_LOCATION first, BACKGROUND_LOCATION
+    // separately (the latter opens a Settings page, not a normal dialog).
+    private val REQ_FINE_LOCATION       = 101
+    private val REQ_BACKGROUND_LOCATION = 102
+
+    private fun ensureLocationPermissions() {
+        val fineGranted = ContextCompat.checkSelfPermission(
+            this, Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!fineGranted) {
+            ActivityCompat.requestPermissions(this,
+                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION), REQ_FINE_LOCATION)
+            return  // background prompt is chained from onRequestPermissionsResult
+        }
+        if (Build.VERSION.SDK_INT >= 29) {
+            val bgGranted = ContextCompat.checkSelfPermission(
+                this, Manifest.permission.ACCESS_BACKGROUND_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!bgGranted) {
+                ActivityCompat.requestPermissions(this,
+                    arrayOf(Manifest.permission.ACCESS_BACKGROUND_LOCATION),
+                    REQ_BACKGROUND_LOCATION)
+            }
+        }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int, permissions: Array<out String>, grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQ_FINE_LOCATION) {
+            // Chain into the background-location prompt once FINE is decided
+            // (skipped automatically if the user denied FINE).
+            ensureLocationPermissions()
         }
     }
 

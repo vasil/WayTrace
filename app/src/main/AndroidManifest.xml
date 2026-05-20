@@ -2,9 +2,17 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- Android 14+ requires a permission per foreground-service type. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_HEALTH" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- GPS — used both as data and as a MIUI keep-alive (location-tracking apps
+         get a privileged service class that MIUI is reluctant to kill). -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
     <!-- OSI-019 live sonification: UDP packets to laptop on local WiFi. -->
     <uses-permission android:name="android.permission.INTERNET" />
 
@@ -35,7 +43,7 @@
         <service
             android:name=".RecorderService"
             android:exported="false"
-            android:foregroundServiceType="health" />
+            android:foregroundServiceType="location|health|dataSync" />
 
     </application>
 
