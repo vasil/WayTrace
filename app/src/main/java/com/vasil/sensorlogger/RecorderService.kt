@@ -197,7 +197,11 @@ class RecorderService : Service(), SensorEventListener {
         // can sleep between drains. Critical for surviving MIUI's wakeup-
         // abuse killer during long screen-off pushes.
         const val SAMPLING_PERIOD_US           = 8333       // ~120 Hz request (OS caps to hw rate)
-        const val MAX_REPORT_LATENCY_US_OFFLINE = 5_000_000 // 5 s when only recording to CSV
+        // Was 5_000_000 (5 s) — works for CPU savings but MIUI's per-component
+        // scheduler reads a 5 s silence as "listener idle" and throttles delivery
+        // even when the foreground service is alive. 500 ms keeps the listener
+        // visibly active while still cutting wakeups by ~30x vs no batching.
+        const val MAX_REPORT_LATENCY_US_OFFLINE =   500_000 // 0.5 s when only recording to CSV
         const val MAX_REPORT_LATENCY_US_LIVE    =   200_000 // 0.2 s when OSI-019 streaming
 
         // GPS keep-alive — 1 Hz, completely independent of the 60 Hz sensor stream.
