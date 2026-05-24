@@ -36,8 +36,16 @@ from datetime import datetime
 # X_gyro  = ROLL (sideways lean)
 # Z_gyro  = PITCH (wheelies)
 
-SAMPLE_RATE = 60.0  # Hz (Xiaomi hardware ceiling)
 GRAVITY     = 9.81  # m/s²
+
+# Sample rate is detected per-recording at runtime — see detect_sample_rate().
+# v3.0.4 delivers 120 Hz; older recordings were 60 Hz. All technique functions
+# take fs as an argument so the same code works at either rate.
+
+# Low-pass cutoff used before jerk differentiation. 20 Hz is well below
+# Nyquist for both 60 Hz (Nyq 30) and 120 Hz (Nyq 60), so the same filter
+# spec works for every recording the project has produced.
+JERK_PRE_LPF_HZ = 20.0
 
 # ISO 2631-1 whole-body vibration health thresholds (RMS over session)
 RMS_COMFORTABLE    = 0.5   # m/s²
@@ -169,6 +177,16 @@ def detect_events_offline(accel: pd.DataFrame, gyro: pd.DataFrame) -> pd.DataFra
     return pd.DataFrame(events, columns=['t_s', 'kind']).sort_values('t_s').reset_index(drop=True)
 
 
+def detect_sample_rate(accel: pd.DataFrame) -> float:
+    """Median inter-sample interval → Hz. Same logic as tools/verify_60hz.py."""
+    if len(accel) < 2:
+        return 60.0
+    dt = float(np.median(np.diff(accel['timestamp_ms'].values))) / 1000.0
+    if dt <= 0:
+        return 60.0
+    return 1.0 / dt
+
+
 def split_sensors(df: pd.DataFrame):
     accel = df[df['sensor'] == 'accel'].copy().reset_index(drop=True)
     gyro  = df[df['sensor'] == 'gyro'].copy().reset_index(drop=True)
@@ -185,10 +203,10 @@ def split_sensors(df: pd.DataFrame):
 
 # ── Technique 1: FFT ──────────────────────────────────────────────────────────
 
-def compute_fft(accel: pd.DataFrame):
+def compute_fft(accel: pd.DataFrame, fs: float):
     x = accel['x'].values
     n = len(x)
-    freqs = np.fft.rfftfreq(n, d=1.0 / SAMPLE_RATE)
+    freqs = np.fft.rfftfreq(n, d=1.0 / fs)
     fft_vals = np.abs(np.fft.rfft(x)) ** 2 / n  # PSD
     return freqs, fft_vals
 
@@ -209,11 +227,11 @@ def dominant_band(freqs, psd):
 
 # ── Technique 2: RMS ─────────────────────────────────────────────────────────
 
-def compute_rms(accel: pd.DataFrame, window_s: float = 10.0):
+def compute_rms(accel: pd.DataFrame, fs: float, window_s: float = 10.0):
     vib = accel['vibration'].values
     rms_full = math.sqrt(np.mean(vib ** 2))
 
-    window = int(window_s * SAMPLE_RATE)
+    window = int(window_s * fs)
     rms_windows = []
     t_windows = []
     for i in range(0, len(vib) - window, window // 2):
@@ -231,9 +249,9 @@ def compute_rms(accel: pd.DataFrame, window_s: float = 10.0):
 
 # ── Technique 3: VDV ─────────────────────────────────────────────────────────
 
-def compute_vdv(accel: pd.DataFrame):
+def compute_vdv(accel: pd.DataFrame, fs: float):
     vib = accel['vibration'].values
-    dt = 1.0 / SAMPLE_RATE
+    dt = 1.0 / fs
     vdv = (np.sum(vib ** 4) * dt) ** 0.25
     if vdv < VDV_LOW:
         risk = 'LOW'
@@ -246,35 +264,49 @@ def compute_vdv(accel: pd.DataFrame):
 
 # ── Technique 4: STFT Spectrogram ─────────────────────────────────────────────
 
-def compute_stft(accel: pd.DataFrame):
+def compute_stft(accel: pd.DataFrame, fs: float):
     x = accel['x'].values
-    window_samples = int(5.0 * SAMPLE_RATE)
+    window_samples = int(5.0 * fs)
     overlap = window_samples // 2
-    f, t, Zxx = signal.stft(x, fs=SAMPLE_RATE, nperseg=window_samples, noverlap=overlap)
+    f, t, Zxx = signal.stft(x, fs=fs, nperseg=window_samples, noverlap=overlap)
     return f, t, np.abs(Zxx)
 
 
 # ── Technique 5: Jerk ────────────────────────────────────────────────────────
 
-def compute_jerk(accel: pd.DataFrame):
+def compute_jerk(accel: pd.DataFrame, fs: float):
+    # Low-pass the magnitude before differentiating: raw np.diff at 120 Hz
+    # amplifies per-sample noise into spurious "jerk" spikes. The 20 Hz cutoff
+    # is below Nyquist for every rate the project records at (60 / 120 Hz),
+    # so the same spec works everywhere.
     mag = accel['magnitude'].values
-    dt = 1.0 / SAMPLE_RATE
-    jerk = np.abs(np.diff(mag)) / dt
+    b, a = signal.butter(2, JERK_PRE_LPF_HZ / (fs / 2), btype='low')
+    mag_smooth = signal.filtfilt(b, a, mag)
+    dt = 1.0 / fs
+    jerk = np.abs(np.diff(mag_smooth)) / dt
     t_jerk = accel['t_s'].values[1:]
-    obstacles = t_jerk[jerk > JERK_OBSTACLE_THRESHOLD]
-    return t_jerk, jerk, obstacles
+    # Deduplicate above-threshold samples into discrete obstacle EVENTS, using
+    # the same cooldown as detect_events_offline so counts stay comparable.
+    above = jerk > JERK_OBSTACLE_THRESHOLD
+    obstacles = []
+    last_t = -10.0
+    for t, hit in zip(t_jerk, above):
+        if hit and (t - last_t) > EVENT_COOLDOWN_S:
+            obstacles.append(t)
+            last_t = t
+    return t_jerk, jerk, np.array(obstacles)
 
 
 # ── Technique 6: IRI Estimation ───────────────────────────────────────────────
 
-def compute_iri(accel: pd.DataFrame):
+def compute_iri(accel: pd.DataFrame, fs: float):
     # Orientation-independent: high-pass filter the centered magnitude
     # (|accel| - g), windowed RMS, scaled by an empirical wheelchair factor.
     vib = accel['vibration'].values
-    b, a = signal.butter(2, 0.5 / (SAMPLE_RATE / 2), btype='high')
+    b, a = signal.butter(2, 0.5 / (fs / 2), btype='high')
     v_filtered = signal.filtfilt(b, a, vib)
 
-    window = int(10 * SAMPLE_RATE)  # ~10 second windows
+    window = int(10 * fs)  # ~10 second windows
     iri_vals = []
     for i in range(0, len(v_filtered) - window, window):
         chunk = v_filtered[i:i + window]
@@ -467,18 +499,20 @@ def main():
         sys.exit(1)
 
     generation, sensors_present = detect_generation(df, csv_path)
+    fs = detect_sample_rate(accel)
     print(f"File generation: {generation_banner(generation, sensors_present)}")
     print(f"Rows loaded   : {len(df)} total ({len(accel)} accel, {len(gyro)} gyro)")
     print(f"Duration      : {accel['t_s'].iloc[-1]:.1f} s")
+    print(f"Sample rate   : {fs:.1f} Hz")
 
     # Run all techniques
-    freqs, psd                          = compute_fft(accel)
+    freqs, psd                          = compute_fft(accel, fs)
     dom_band, band_power                = dominant_band(freqs, psd)
-    rms_full, t_rms, rms_windows, pct_bad, pct_mod = compute_rms(accel)
-    vdv, vdv_risk                       = compute_vdv(accel)
-    f_stft, t_stft, stft_mag            = compute_stft(accel)
-    t_jerk, jerk, obstacles             = compute_jerk(accel)
-    iri, iri_condition, _               = compute_iri(accel)
+    rms_full, t_rms, rms_windows, pct_bad, pct_mod = compute_rms(accel, fs)
+    vdv, vdv_risk                       = compute_vdv(accel, fs)
+    f_stft, t_stft, stft_mag            = compute_stft(accel, fs)
+    t_jerk, jerk, obstacles             = compute_jerk(accel, fs)
+    iri, iri_condition, _               = compute_iri(accel, fs)
     stats                               = compute_stats(accel)
 
     # Offline event detection — works the same for v1, v2, and v3 files.
