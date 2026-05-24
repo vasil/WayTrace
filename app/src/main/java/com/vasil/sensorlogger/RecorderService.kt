@@ -10,11 +10,7 @@ import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.content.pm.PackageManager
 import android.hardware.Sensor
-import android.location.Location
-import android.location.LocationListener
-import android.location.LocationManager
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
@@ -28,8 +24,6 @@ import android.os.Looper
 import android.os.HandlerThread
 import android.os.PowerManager
 import android.os.SystemClock
-import android.Manifest
-import androidx.core.content.ContextCompat
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -102,8 +96,6 @@ class RecorderService : Service(), SensorEventListener {
     }
 
     private lateinit var sensorManager: SensorManager
-    private var locationManager: LocationManager? = null
-    private var locationListener: LocationListener? = null
     private var accelerometer: Sensor? = null
     private var gyroscope: Sensor? = null
 
@@ -135,15 +127,6 @@ class RecorderService : Service(), SensorEventListener {
             currentFile?.length() ?: 0L
         }
     }
-
-    private val INTERVAL_NS = 8_333_333L  // 120 Hz
-    private var lastAccelTime = 0L
-    private var lastGyroTime = 0L
-
-    // v2 high-rate throttle timestamps. pressure is naturally low-rate.
-    private var lastGravityTime  = 0L
-    private var lastMagTime      = 0L
-    private var lastRotvecTime   = 0L
 
     var elapsedMs = 0L
         private set
@@ -193,23 +176,13 @@ class RecorderService : Service(), SensorEventListener {
         const val ACTION_STOP_REQUEST = "com.vasil.sensorlogger.STOP_REQUEST"
         const val EXTRA_STOP_DIALOG   = "show_stop_dialog"
 
-        // Sensor batching — lets the on-chip FIFO buffer events so the CPU
-        // can sleep between drains. Critical for surviving MIUI's wakeup-
-        // abuse killer during long screen-off pushes.
-        const val SAMPLING_PERIOD_US           = 8333       // ~120 Hz request (OS caps to hw rate)
-        // Was 5_000_000 (5 s) — works for CPU savings but MIUI's per-component
-        // scheduler reads a 5 s silence as "listener idle" and throttles delivery
-        // even when the foreground service is alive. 500 ms keeps the listener
-        // visibly active while still cutting wakeups by ~30x vs no batching.
-        const val MAX_REPORT_LATENCY_US_OFFLINE =   500_000 // 0.5 s when only recording to CSV
-        const val MAX_REPORT_LATENCY_US_LIVE    =   200_000 // 0.2 s when OSI-019 streaming
-
-        // GPS keep-alive — 1 Hz, completely independent of the 60 Hz sensor stream.
-        // The location subscription itself is what earns the service MIUI's
-        // "user is tracking location" privilege — the recorded fixes are a
-        // useful side-effect to cross-check against Strava.
-        const val GPS_MIN_INTERVAL_MS = 1000L
-        const val GPS_MIN_DISTANCE_M  = 0f
+        // Sampling rate request — hardware caps to 60 Hz on this Xiaomi phone.
+        const val SAMPLING_PERIOD_US            = 8333  // ~120 Hz request (OS caps to hw rate)
+        // OSI-013: zero batching. Any non-zero maxReportLatencyUs combined
+        // with high-rate listeners reproduces the 60 s sensor-death symptom.
+        // The HIGH_SAMPLING_RATE_SENSORS permission is the other half of the fix.
+        const val MAX_REPORT_LATENCY_US_OFFLINE = 0
+        const val MAX_REPORT_LATENCY_US_LIVE    = 0
     }
 
     private val actionReceiver = object : BroadcastReceiver() {
@@ -231,29 +204,44 @@ class RecorderService : Service(), SensorEventListener {
         }
     }
 
+    // Prefer the wake-up variant of a sensor — MIUI's per-component scheduler
+    // is not allowed to silence wake-up listeners (they're contractually
+    // required to wake the AP). Falls back to the non-wake-up variant on
+    // devices that don't expose a wake-up sensor for the requested type.
+    private fun wakeupOrFallback(type: Int): Sensor? {
+        return sensorManager.getDefaultSensor(type, true)
+            ?: sensorManager.getDefaultSensor(type)
+    }
+
     override fun onCreate() {
         super.onCreate()
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
-        locationManager = getSystemService(Context.LOCATION_SERVICE) as? LocationManager
-        accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
-        gyroscope     = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
+
+        // Wake-up variants — kernel contract prevents silencing while AP sleeps.
+        accelerometer = wakeupOrFallback(Sensor.TYPE_ACCELEROMETER)
+        gyroscope     = wakeupOrFallback(Sensor.TYPE_GYROSCOPE)
 
         // v2 sensors — silently null on devices that lack a given sensor.
-        gravity   = sensorManager.getDefaultSensor(Sensor.TYPE_GRAVITY)
+        gravity   = wakeupOrFallback(Sensor.TYPE_GRAVITY)
         // Calibrated magnetometer — Android's fusion already subtracts hard/soft-iron
         // bias and returns three values that fit our CSV layout. The uncalibrated
         // variant returns six values (raw + bias), of which only three fit our schema.
-        magnet    = sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)
-        rotvec    = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+        magnet    = wakeupOrFallback(Sensor.TYPE_MAGNETIC_FIELD)
+        rotvec    = wakeupOrFallback(Sensor.TYPE_ROTATION_VECTOR)
+        // Pressure rarely has a wake-up variant and we don't use it for bump
+        // detection — regular variant is fine.
         pressure  = sensorManager.getDefaultSensor(Sensor.TYPE_PRESSURE)
 
-        // Log hardware FIFO depth so we can verify batching is actually
-        // hardware-backed on this device. FIFO=0 means the framework will
-        // silently fall back to non-batched delivery (no regression, but
-        // also no benefit from the maxReportLatencyUs parameter).
-        fun fifo(label: String, s: Sensor?) = if (s == null) "$label=none"
-            else "$label=${s.fifoReservedEventCount}/${s.fifoMaxEventCount}"
-        Log.i("WayTrace", "sensor FIFO depths (reserved/max): " +
+        // Log hardware FIFO depth + wake-up flag. After this build, the
+        // "WAKE" tag in logcat proves the wake-up variant was selected.
+        // FIFO=0 means the framework will silently fall back to non-batched
+        // delivery (no regression).
+        fun fifo(label: String, s: Sensor?): String {
+            if (s == null) return "$label=none"
+            val wk = if (s.isWakeUpSensor) "WAKE" else "regular"
+            return "$label=${s.fifoReservedEventCount}/${s.fifoMaxEventCount}/$wk"
+        }
+        Log.i("WayTrace", "sensor FIFO/wake (reserved/max/class): " +
             "${fifo("accel", accelerometer)}  ${fifo("gyro", gyroscope)}  " +
             "${fifo("gravity", gravity)}  ${fifo("magnet", magnet)}  " +
             "${fifo("rotvec", rotvec)}  ${fifo("pressure", pressure)}")
@@ -386,8 +374,6 @@ class RecorderService : Service(), SensorEventListener {
         }
 
         pinpointCount = 0
-        lastAccelTime = 0L; lastGyroTime = 0L
-        lastGravityTime = 0L; lastMagTime = 0L; lastRotvecTime = 0L
         startTimeMs = System.currentTimeMillis(); elapsedMs = 0L
 
         wakeLock = (getSystemService(Context.POWER_SERVICE) as PowerManager)
@@ -404,7 +390,6 @@ class RecorderService : Service(), SensorEventListener {
 
     fun pauseRecording() {
         sensorManager.unregisterListener(this)
-        unregisterGps()
         timerHandler.removeCallbacks(timerRunnable)
         elapsedMs = System.currentTimeMillis() - startTimeMs
         wakeLock?.release(); wakeLock = null
@@ -447,7 +432,6 @@ class RecorderService : Service(), SensorEventListener {
 
     fun stopRecording() {
         sensorManager.unregisterListener(this)
-        unregisterGps()
         timerHandler.removeCallbacks(timerRunnable)
         if (state == RecordingState.RECORDING) elapsedMs = System.currentTimeMillis() - startTimeMs
         wakeLock?.release(); wakeLock = null
@@ -491,51 +475,6 @@ class RecorderService : Service(), SensorEventListener {
 
         Log.i("WayTrace", "sensors registered: rate=${SAMPLING_PERIOD_US}µs " +
             "batch=${maxLatency}µs (live=$liveModeEnabled)")
-
-        registerGps()
-    }
-
-    private fun registerGps() {
-        val lm = locationManager ?: return
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
-                != PackageManager.PERMISSION_GRANTED) {
-            Log.w("WayTrace", "GPS keep-alive: ACCESS_FINE_LOCATION not granted; skipping")
-            return
-        }
-        if (locationListener == null) {
-            locationListener = LocationListener { loc -> onGpsFix(loc) }
-        }
-        try {
-            lm.requestLocationUpdates(
-                LocationManager.GPS_PROVIDER,
-                GPS_MIN_INTERVAL_MS,
-                GPS_MIN_DISTANCE_M,
-                locationListener!!,
-                Looper.getMainLooper()
-            )
-            Log.i("WayTrace", "GPS keep-alive subscribed @ 1 Hz")
-        } catch (e: SecurityException) {
-            Log.w("WayTrace", "GPS subscribe failed: ${e.message}")
-        } catch (e: IllegalArgumentException) {
-            // GPS provider absent on this device (very rare). Sensor recording continues.
-            Log.w("WayTrace", "GPS provider unavailable: ${e.message}")
-        }
-    }
-
-    private fun unregisterGps() {
-        val lm = locationManager ?: return
-        locationListener?.let {
-            try { lm.removeUpdates(it) } catch (_: Exception) {}
-        }
-        locationListener = null
-    }
-
-    private fun onGpsFix(loc: Location) {
-        if (state != RecordingState.RECORDING) return
-        val tsMs = SystemClock.elapsedRealtime()
-        // gps row schema: ts_ms,gps,lat,lon,alt,accuracy
-        val row = "$tsMs,gps,${loc.latitude},${loc.longitude},${loc.altitude},${loc.accuracy}"
-        writer?.println(row); liveQueue(row)
     }
 
     // ── Sensor events ─────────────────────────────────────────────────────────
@@ -547,32 +486,22 @@ class RecorderService : Service(), SensorEventListener {
         val nowNs = event.timestamp
         when (event.sensor.type) {
             Sensor.TYPE_ACCELEROMETER -> {
-                if (lastAccelTime != 0L && nowNs - lastAccelTime < INTERVAL_NS) return
-                lastAccelTime = nowNs
                 val row = "${nowNs / 1_000_000L},accel,${event.values[0]},${event.values[1]},${event.values[2]},"
                 writer?.println(row); liveQueue(row)
             }
             Sensor.TYPE_GYROSCOPE -> {
-                if (lastGyroTime != 0L && nowNs - lastGyroTime < INTERVAL_NS) return
-                lastGyroTime = nowNs
                 val row = "${nowNs / 1_000_000L},gyro,${event.values[0]},${event.values[1]},${event.values[2]},"
                 writer?.println(row); liveQueue(row)
             }
             Sensor.TYPE_GRAVITY -> {
-                if (lastGravityTime != 0L && nowNs - lastGravityTime < INTERVAL_NS) return
-                lastGravityTime = nowNs
                 val row = "${nowNs / 1_000_000L},gravity,${event.values[0]},${event.values[1]},${event.values[2]},"
                 writer?.println(row); liveQueue(row)
             }
             Sensor.TYPE_MAGNETIC_FIELD -> {
-                if (lastMagTime != 0L && nowNs - lastMagTime < INTERVAL_NS) return
-                lastMagTime = nowNs
                 val row = "${nowNs / 1_000_000L},mag,${event.values[0]},${event.values[1]},${event.values[2]},"
                 writer?.println(row); liveQueue(row)
             }
             Sensor.TYPE_ROTATION_VECTOR -> {
-                if (lastRotvecTime != 0L && nowNs - lastRotvecTime < INTERVAL_NS) return
-                lastRotvecTime = nowNs
                 // ROTATION_VECTOR returns [x, y, z, w, (accuracy)]. Only rotvec
                 // rows populate column 6 — the quaternion's W (rotvec_w).
                 val w = if (event.values.size > 3) event.values[3] else 0f

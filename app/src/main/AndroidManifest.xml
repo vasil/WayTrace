@@ -4,15 +4,12 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <!-- Android 14+ requires a permission per foreground-service type. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_HEALTH" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
-    <!-- GPS — used both as data and as a MIUI keep-alive (location-tracking apps
-         get a privileged service class that MIUI is reluctant to kill). -->
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+    <!-- OSI-013 root-cause fix: Android 12+ silently kills high-rate sensor
+         delivery after ~60 s unless this permission is declared. -->
+    <uses-permission android:name="android.permission.HIGH_SAMPLING_RATE_SENSORS" />
     <!-- OSI-019 live sonification: UDP packets to laptop on local WiFi. -->
     <uses-permission android:name="android.permission.INTERNET" />
 
@@ -43,7 +40,7 @@
         <service
             android:name=".RecorderService"
             android:exported="false"
-            android:foregroundServiceType="location|health|dataSync" />
+            android:foregroundServiceType="health" />
 
     </application>
 
