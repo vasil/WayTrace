@@ -33,11 +33,12 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap, BoundaryNorm
 
 from waytrace_analysis import (
-    SAMPLE_RATE, GRAVITY,
+    GRAVITY,
     RMS_UNCOMFORTABLE, BUMP_MAG, HEAVY_BUMP_MAG,
     load_csv, split_sensors,
     detect_generation, generation_banner,
     detect_events_offline,
+    detect_sample_rate,
 )
 
 LOCAL_TZ        = ZoneInfo("Europe/Skopje")
@@ -270,7 +271,7 @@ class BadSegment:
 GAP_SECONDS = 5.0          # split contiguous chunks at gaps > this many seconds
 
 
-def _contiguous_chunks(t_s: np.ndarray):
+def _contiguous_chunks(t_s: np.ndarray, fs: float):
     """Yield (start_idx, end_idx_exclusive) for runs where consecutive
     samples are within GAP_SECONDS of each other. This prevents bad-spot
     segments from chaining across paused/resumed recording gaps."""
@@ -282,27 +283,28 @@ def _contiguous_chunks(t_s: np.ndarray):
             starts.append(i)
     starts.append(len(t_s))
     for a, b in zip(starts[:-1], starts[1:]):
-        if b - a >= int(WINDOW_SECONDS * SAMPLE_RATE):
+        if b - a >= int(WINDOW_SECONDS * fs):
             yield a, b
 
 
 def find_bad_segments(accel: pd.DataFrame) -> tuple[list, list]:
     t_s    = accel['t_s'].values
+    fs     = detect_sample_rate(accel)
     # Orientation-independent vibration intensity: deviation of the total
     # acceleration magnitude from the gravity baseline. Works regardless of
     # how the phone happens to be mounted (Y-up, Z-up, etc.).
     mag    = np.sqrt(accel['x'].values**2 + accel['y'].values**2 + accel['z'].values**2)
     y_cent = mag - GRAVITY                          # signed deviation
-    dt     = 1.0 / SAMPLE_RATE
+    dt     = 1.0 / fs
     jerk_y = np.concatenate(([0.0], np.abs(np.diff(mag)) / dt))
 
-    win  = int(WINDOW_SECONDS * SAMPLE_RATE)
+    win  = int(WINDOW_SECONDS * fs)
     step = win // 2
 
     rows = []
     all_segments = []
 
-    for chunk_start, chunk_end in _contiguous_chunks(t_s):
+    for chunk_start, chunk_end in _contiguous_chunks(t_s, fs):
         chunk_rows = []
         for i in range(chunk_start, chunk_end - win, step):
             cy   = y_cent[i:i+win]

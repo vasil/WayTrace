@@ -77,8 +77,14 @@ def main():
 
     merged = pd.concat(parts, ignore_index=True)
 
-    out_dir  = paths[0].parent
-    ts       = datetime.now().strftime("%Y%m%d%H%M")
+    # Output filename uses the FIRST session's timestamp (not the merge time)
+    # so waytrace_locate.py's GPX anchor logic can pair the merged file with
+    # the matching Strava activity from the same push.
+    import re
+    out_dir = paths[0].parent
+    first_name = sessions[0][2]
+    m = re.search(r'(\d{12})', first_name)
+    ts = m.group(1) if m else datetime.now().strftime("%Y%m%d%H%M")
     out_path = out_dir / f"ART-MERGED-{ts}.csv"
     merged.to_csv(out_path, index=False)
 
