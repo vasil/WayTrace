@@ -493,7 +493,7 @@ def plot_map(gpx: GpxTrack, window_rows, segments: list[BadSegment],
     tab.text(0, 0.95, "\n".join(lines), family='monospace',
              fontsize=9, va='top', ha='left')
 
-    plt.savefig(out_png, dpi=130, bbox_inches='tight')
+    plt.savefig(out_png, dpi=300, bbox_inches='tight')
     plt.close(fig)
 
 

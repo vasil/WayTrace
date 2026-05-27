@@ -134,7 +134,7 @@ def main(argv):
     ax.grid(True, alpha=0.3)
     ax.legend(loc="upper left", fontsize=9)
     plt.tight_layout()
-    plt.savefig(out_path, dpi=130)
+    plt.savefig(out_path, dpi=300)
     print(f"wrote {out_path}")
     for k, (lat, lon, pk, d, s, e) in enumerate(wheelie_coords, 1):
         print(f"  #{k}: {lat:.6f}, {lon:.6f}   dur={d:.2f}s   peak={pk:+.1f}°   "

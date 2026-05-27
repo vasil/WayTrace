@@ -241,7 +241,7 @@ def main():
     cbar.set_label("vibration RMS (m/s²)")
 
     plt.tight_layout()
-    plt.savefig(out_path, dpi=130)
+    plt.savefig(out_path, dpi=300)
     print(f"\nwrote {out_path}")
     print(f"colour scale: {vmin:.2f} – {vmax:.2f} m/s² RMS "
           f"(5th–95th percentile of covered points)")
