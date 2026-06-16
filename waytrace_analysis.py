@@ -16,6 +16,8 @@ Output:
 import sys
 import csv
 import math
+import argparse
+import xml.etree.ElementTree as ET
 import numpy as np
 import pandas as pd
 import matplotlib
@@ -57,6 +59,48 @@ VDV_MODERATE = 17.0  # m/s^1.75
 
 # Jerk threshold for discrete obstacles
 JERK_OBSTACLE_THRESHOLD = 50.0  # m/s³
+
+# ── Wheelchair geometry — CONFIRMED values from SRS-CURRENT § "WHEELCHAIR GEOMETRY"
+WHEELBASE_M             = 0.32
+CASTER_DIAMETER_M       = 0.1016
+PHONE_HEIGHT_M          = 0.35
+PHONE_FORWARD_OFFSET_M  = 0.15
+PHONE_LATERAL_OFFSET_M  = 0.03
+RIDER_MASS_KG           = 63.0
+CHAIR_MASS_KG           = 15.0
+TOTAL_ROLLING_MASS_KG   = RIDER_MASS_KG + CHAIR_MASS_KG     # 78 kg
+PNEUMATIC_FACTOR        = 1.47
+
+# Caster-fork mounts overstate body-relevant vertical vibration ~3× (Wolf 2005,
+# Garcia-Mendez 2013). Vasil's mount is a fabric-strap pocket above the caster:
+# compliant, so the factor lands between caster-fork (3.0) and seat-tube (1.0).
+# 2.0 is a literature-bracketed default until a waytrace_calibrate run pins it
+# from drop-test data on the current chair.
+GEOMETRY_FACTOR_CASTER_COMPLIANT = 2.0
+
+# ── ISO 8608 road-roughness class boundaries
+# Gd(n₀) is the displacement PSD at reference spatial frequency n₀ = 0.1 cyc/m.
+# Units: m³ (= m² · m, displacement² per cycles-per-meter).
+ISO8608_N0 = 0.1  # cycles / m
+ISO8608_CLASS_LIMITS = [
+    ('A', 32e-6),
+    ('B', 128e-6),
+    ('C', 512e-6),
+    ('D', 2048e-6),
+    ('E', 8192e-6),
+    ('F', 32768e-6),
+    ('G', 131072e-6),
+]  # H = everything above the last limit
+ISO8608_LABELS = {
+    'A': 'very good',
+    'B': 'good',
+    'C': 'average',
+    'D': 'poor',
+    'E': 'very poor',
+    'F': 'undriveable (motor vehicle)',
+    'G': 'undriveable (motor vehicle)',
+    'H': 'undriveable (motor vehicle)',
+}
 
 
 def load_csv(path: Path) -> pd.DataFrame:
@@ -187,13 +231,29 @@ def detect_sample_rate(accel: pd.DataFrame) -> float:
     return 1.0 / dt
 
 
+def wk_weighted_vertical(accel: pd.DataFrame, fs: float) -> np.ndarray:
+    """ISO 2631-1 Wk-weighted vertical acceleration at the phone (Y-axis,
+    gravity removed). Phone is portrait, Y is up — confirmed in the SRS.
+
+    Approximation: 4-pole Butterworth band-pass 0.4–100 Hz. Within ~2 dB
+    of the exact ISO Wk transfer function across the band; the strict
+    bi-quad cascade from ISO 2631-1 Annex A is a follow-up if absolute
+    compliance is needed.
+    """
+    a_y = accel['y'].values - GRAVITY
+    nyq = fs / 2.0
+    hi_cut = min(100.0, nyq * 0.99)
+    b, a = signal.butter(4, [0.4 / nyq, hi_cut / nyq], btype='band')
+    return signal.filtfilt(b, a, a_y)
+
+
 def split_sensors(df: pd.DataFrame):
     accel = df[df['sensor'] == 'accel'].copy().reset_index(drop=True)
     gyro  = df[df['sensor'] == 'gyro'].copy().reset_index(drop=True)
     accel['magnitude'] = np.sqrt(accel['x']**2 + accel['y']**2 + accel['z']**2)
     # Orientation-independent vibration intensity: total-acceleration magnitude
     # minus the gravity baseline. At rest this is ~0 regardless of how the
-    # phone is mounted (Y-up, Z-up, tilted, etc.). RMS/VDV/IRI use this.
+    # phone is mounted (Y-up, Z-up, tilted, etc.). Bumps/jerk/STFT use this.
     accel['vibration'] = np.abs(accel['magnitude'] - GRAVITY)
     accel['t_s'] = (accel['timestamp_ms'] - accel['timestamp_ms'].iloc[0]) / 1000.0
     if not gyro.empty:
@@ -226,9 +286,13 @@ def dominant_band(freqs, psd):
 
 
 # ── Technique 2: RMS ─────────────────────────────────────────────────────────
+#
+# Takes a generic signal array so the same code computes the ISO 2631-1
+# Wk-weighted RMS (when fed `wk_weighted_vertical(accel, fs)`) AND the legacy
+# raw-magnitude RMS (when fed `accel['vibration'].values`).
 
-def compute_rms(accel: pd.DataFrame, fs: float, window_s: float = 10.0):
-    vib = accel['vibration'].values
+def compute_rms(vib: np.ndarray, t_s: np.ndarray, fs: float,
+                window_s: float = 10.0):
     rms_full = math.sqrt(np.mean(vib ** 2))
 
     window = int(window_s * fs)
@@ -237,20 +301,24 @@ def compute_rms(accel: pd.DataFrame, fs: float, window_s: float = 10.0):
     for i in range(0, len(vib) - window, window // 2):
         chunk = vib[i:i + window]
         rms_windows.append(math.sqrt(np.mean(chunk ** 2)))
-        t_windows.append(accel['t_s'].iloc[i + window // 2])
+        t_windows.append(t_s[i + window // 2])
 
-    pct_uncomfortable = 100 * np.mean(np.array(rms_windows) > RMS_UNCOMFORTABLE)
+    rms_arr = np.array(rms_windows)
+    pct_uncomfortable = 100 * np.mean(rms_arr > RMS_UNCOMFORTABLE)
     pct_moderate      = 100 * np.mean(
-        (np.array(rms_windows) > RMS_COMFORTABLE) & (np.array(rms_windows) <= RMS_UNCOMFORTABLE)
+        (rms_arr > RMS_COMFORTABLE) & (rms_arr <= RMS_UNCOMFORTABLE)
     )
 
-    return rms_full, np.array(t_windows), np.array(rms_windows), pct_uncomfortable, pct_moderate
+    return rms_full, np.array(t_windows), rms_arr, pct_uncomfortable, pct_moderate
 
 
 # ── Technique 3: VDV ─────────────────────────────────────────────────────────
+#
+# Same generic-signal contract as compute_rms. ISO 2631-1 formula:
+# VDV = (∫ a⁴(t) dt)^¼. Result is health-risk graded against ISO 2631-1
+# thresholds.
 
-def compute_vdv(accel: pd.DataFrame, fs: float):
-    vib = accel['vibration'].values
+def compute_vdv(vib: np.ndarray, fs: float):
     dt = 1.0 / fs
     vdv = (np.sum(vib ** 4) * dt) ** 0.25
     if vdv < VDV_LOW:
@@ -327,6 +395,141 @@ def compute_iri(accel: pd.DataFrame, fs: float):
         condition = 'Severely damaged'
 
     return iri_mean, condition, iri_vals
+
+
+# ── Technique 7a: Geometry correction (rider exposure) ───────────────────────
+#
+# Raw vertical at the phone overstates body-relevant vibration because the
+# caster-fork mount couples directly to the small front wheel. Wolf 2005 and
+# Garcia-Mendez 2013 measure the overstate at ~3× for rigid caster-fork
+# mounts. Vasil's mount is a fabric strap above the caster (compliant), so
+# the factor lands between caster-fork and seat-tube — 2.0 by default,
+# overridable from a future waytrace_calibrate run.
+
+def compute_rider_exposure(a_w: np.ndarray,
+                           geom_factor: float = GEOMETRY_FACTOR_CASTER_COMPLIANT
+                           ) -> np.ndarray:
+    """Approximate the rider-seat Wk-weighted vertical from the phone's
+    Wk-weighted vertical, by dividing by the mount geometry factor."""
+    if geom_factor <= 0:
+        return a_w
+    return a_w / geom_factor
+
+
+# ── Technique 7b: RFC — energy delivered to the rolling mass per meter ──────
+#
+# Operational definition: the work integral of the vertical vibration force
+# acting on the rolling mass, divided by the distance pushed.
+#
+#   F_w(t) = m × a_w(t)             [N]    vibration force
+#   v_w(t) = ∫ a_w(t) dt            [m/s]  Wk-weighted vertical velocity
+#   P(t)   = |F_w · v_w|            [W]    instantaneous absolute mech power
+#   E      = ∫ P dt                 [J]    total energy delivered
+#   RFC    = E / distance           [J/m]  = N, interpretable as the average
+#                                          vertical resistive force exerted
+#                                          on the rolling mass by the road.
+#
+# Not a standardised metric, but cleanly dimensional and comparable across
+# pushes. Default mass = 78 kg (SRS-CURRENT TOTAL_ROLLING_MASS_KG).
+
+def compute_rfc_j_per_m(a_w: np.ndarray, fs: float, distance_m: float,
+                        mass_kg: float = TOTAL_ROLLING_MASS_KG) -> float:
+    if not distance_m or distance_m <= 0:
+        return float('nan')
+    # Mean-subtract before integrating so we don't accumulate a velocity drift.
+    v_w = np.cumsum(a_w - a_w.mean()) / fs
+    dt = 1.0 / fs
+    e_total = mass_kg * float(np.sum(np.abs(a_w * v_w))) * dt
+    return e_total / distance_m
+
+
+# ── Technique 7c: ISO 8608 road-roughness class A–H ─────────────────────────
+#
+# Standard road classification from the displacement PSD evaluated at
+# reference spatial frequency n₀ = 0.1 cycles/m. We have acceleration vs
+# time, so the conversion is:
+#
+#   1. Welch PSD of a_w(t) → G_a(f)              [(m/s²)² / Hz]
+#   2. Displacement PSD: G_d(f) = G_a(f) / (2π f)⁴    [m² / Hz]
+#   3. Convert temporal → spatial freq via mean speed v̄:
+#        n = f / v̄          [cycles / m]
+#        G_d(n) = G_d(f) × v̄                       [m² · m = m³]
+#   4. Interpolate G_d at n₀ = 0.1 cyc/m → look up class.
+
+def compute_iso8608_class(a_w: np.ndarray, fs: float, mean_speed_ms: float):
+    if not mean_speed_ms or mean_speed_ms <= 0.1:
+        return None, float('nan')
+    # Welch PSD of acceleration. 16 s window gives 0.0625 Hz resolution, enough
+    # for n₀=0.1 cyc/m at walking speed (~1 m/s → 0.1 Hz) without extrapolation.
+    nperseg = min(int(16 * fs), len(a_w))
+    f, g_a = signal.welch(a_w, fs=fs, nperseg=nperseg)
+    f = f[1:]; g_a = g_a[1:]              # skip f=0 to avoid /0
+    g_d_temporal = g_a / (2.0 * np.pi * f) ** 4
+    n = f / mean_speed_ms
+    g_d_spatial = g_d_temporal * mean_speed_ms
+    # ISO 8608 assumes G_d(n) = G_d(n₀)·(n/n₀)^(-w) with w≈2. Fit log-log in
+    # the band 0.1 ≤ n ≤ 10 cyc/m (the standard's range of interest) and
+    # extrapolate to n₀ if our lowest sample falls above 0.1 — this is the
+    # case at wheelchair speeds (slower vehicle → higher minimum spatial freq).
+    log_n = np.log(n); log_g = np.log(np.clip(g_d_spatial, 1e-30, None))
+    mask = (n >= max(n.min(), ISO8608_N0 * 0.5)) & (n <= 10.0)
+    if mask.sum() < 4:
+        return None, float('nan')
+    slope, intercept = np.polyfit(log_n[mask], log_g[mask], 1)
+    gd_n0 = float(np.exp(slope * np.log(ISO8608_N0) + intercept))
+    for letter, upper in ISO8608_CLASS_LIMITS:
+        if gd_n0 < upper:
+            return letter, gd_n0
+    return 'H', gd_n0
+
+
+# ── Spatial header (from GPX) ────────────────────────────────────────────────
+
+def _haversine_m(lat1, lon1, lat2, lon2) -> float:
+    R = 6_371_000.0
+    p1, p2 = np.radians(lat1), np.radians(lat2)
+    dlat = np.radians(lat2 - lat1)
+    dlon = np.radians(lon2 - lon1)
+    a = np.sin(dlat / 2) ** 2 + np.cos(p1) * np.cos(p2) * np.sin(dlon / 2) ** 2
+    return 2 * R * np.arcsin(np.sqrt(np.clip(a, 0, 1)))
+
+
+def parse_gpx(path: Path):
+    """Return ndarray of (lat, lon) for every <trkpt>."""
+    ns = 'http://www.topografix.com/GPX/1/1'
+    pts = []
+    for tp in ET.parse(path).getroot().iter(f'{{{ns}}}trkpt'):
+        pts.append((float(tp.attrib['lat']), float(tp.attrib['lon'])))
+    return np.array(pts) if pts else np.zeros((0, 2))
+
+
+def auto_discover_gpx(csv_path: Path) -> Path | None:
+    """Look for GPS-<same-timestamp>.gpx next to ART-<timestamp>.csv."""
+    m = re.search(r'(\d{12})', csv_path.name)
+    if not m:
+        return None
+    candidate = csv_path.parent / f'GPS-{m.group(1)}.gpx'
+    return candidate if candidate.exists() else None
+
+
+def compute_spatial_header(gpx_path: Path, duration_s: float):
+    """Distance, mean speed, bounding box, start/end coords. All from GPX."""
+    pts = parse_gpx(gpx_path)
+    if len(pts) < 2:
+        return None
+    lat = pts[:, 0]; lon = pts[:, 1]
+    seg = _haversine_m(lat[:-1], lon[:-1], lat[1:], lon[1:])
+    distance_m = float(seg.sum())
+    speed_ms = distance_m / duration_s if duration_s > 0 else 0.0
+    return {
+        'start':       (float(lat[0]),  float(lon[0])),
+        'end':         (float(lat[-1]), float(lon[-1])),
+        'bbox':        (float(lat.min()), float(lat.max()),
+                        float(lon.min()), float(lon.max())),
+        'distance_m':  distance_m,
+        'speed_ms':    speed_ms,
+        'gpx_name':    gpx_path.name,
+    }
 
 
 # ── Technique 7: Statistical Profile ─────────────────────────────────────────
@@ -474,11 +677,21 @@ def plot_report(accel, freqs, psd, dom_band, band_power,
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: python waytrace_analysis.py <sensors_YYYYMMDD_HHMMSS.csv>")
-        sys.exit(1)
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument('csv', help='Input ART-YYYYMMDDHHMM.csv')
+    ap.add_argument('--gpx', help='Override GPX path (default: auto-discover '
+                                  'GPS-<same-timestamp>.gpx next to the CSV).')
+    ap.add_argument('--geom-factor', type=float,
+                    default=GEOMETRY_FACTOR_CASTER_COMPLIANT,
+                    help='Mount geometry factor for rider exposure (default '
+                         f'{GEOMETRY_FACTOR_CASTER_COMPLIANT} for fabric-strap '
+                         'pocket over the caster).')
+    ap.add_argument('--mass', type=float, default=TOTAL_ROLLING_MASS_KG,
+                    help=f'Rolling mass in kg for RFC (default '
+                         f'{TOTAL_ROLLING_MASS_KG}).')
+    args = ap.parse_args()
 
-    csv_path = Path(sys.argv[1])
+    csv_path = Path(args.csv)
     if not csv_path.exists():
         print(f"File not found: {csv_path}")
         sys.exit(1)
@@ -500,20 +713,64 @@ def main():
 
     generation, sensors_present = detect_generation(df, csv_path)
     fs = detect_sample_rate(accel)
+    duration_s = float(accel['t_s'].iloc[-1])
     print(f"File generation: {generation_banner(generation, sensors_present)}")
     print(f"Rows loaded   : {len(df)} total ({len(accel)} accel, {len(gyro)} gyro)")
-    print(f"Duration      : {accel['t_s'].iloc[-1]:.1f} s")
+    print(f"Duration      : {duration_s:.1f} s")
     print(f"Sample rate   : {fs:.1f} Hz")
 
-    # Run all techniques
+    # ── Spatial header (GPX) ────────────────────────────────────────────────
+    gpx_path = Path(args.gpx) if args.gpx else auto_discover_gpx(csv_path)
+    spatial = None
+    if gpx_path and gpx_path.exists():
+        spatial = compute_spatial_header(gpx_path, duration_s)
+    if spatial:
+        print(f"\nSpatial (from {spatial['gpx_name']}):")
+        s_lat, s_lon = spatial['start']
+        e_lat, e_lon = spatial['end']
+        bl_lat, tr_lat, bl_lon, tr_lon = spatial['bbox']
+        print(f"  start         : {s_lat:.5f}, {s_lon:.5f}")
+        print(f"  end           : {e_lat:.5f}, {e_lon:.5f}")
+        print(f"  bbox          : {bl_lat:.4f}–{tr_lat:.4f}, {bl_lon:.4f}–{tr_lon:.4f}")
+        print(f"  distance      : {spatial['distance_m']/1000:.2f} km")
+        print(f"  mean speed    : {spatial['speed_ms']*3.6:.2f} km/h")
+    else:
+        print("\nSpatial: no GPX found (skipped distance, mean-speed, ISO 8608)")
+
+    # ── Wk-weighted vertical: ISO 2631-1 canonical input ────────────────────
+    a_w = wk_weighted_vertical(accel, fs)
+    t_s_arr = accel['t_s'].to_numpy()
+
+    # Per-technique calls.
     freqs, psd                          = compute_fft(accel, fs)
     dom_band, band_power                = dominant_band(freqs, psd)
-    rms_full, t_rms, rms_windows, pct_bad, pct_mod = compute_rms(accel, fs)
-    vdv, vdv_risk                       = compute_vdv(accel, fs)
+    # Road-profile (raw phone, no geometry correction).
+    rms_full, t_rms, rms_windows, pct_bad, pct_mod = compute_rms(
+        a_w, t_s_arr, fs)
+    vdv, vdv_risk                       = compute_vdv(a_w, fs)
+    # Legacy raw-magnitude RMS, kept for backwards comparison with old reports.
+    rms_raw, _, _, _, _                 = compute_rms(
+        accel['vibration'].to_numpy(), t_s_arr, fs)
+    vdv_raw, vdv_raw_risk               = compute_vdv(
+        accel['vibration'].to_numpy(), fs)
+    # Rider exposure (geometry correction).
+    a_w_rider                           = compute_rider_exposure(
+        a_w, args.geom_factor)
+    rms_rider, _, _, _, _               = compute_rms(
+        a_w_rider, t_s_arr, fs)
+    vdv_rider, vdv_rider_risk           = compute_vdv(a_w_rider, fs)
+    # Other techniques.
     f_stft, t_stft, stft_mag            = compute_stft(accel, fs)
     t_jerk, jerk, obstacles             = compute_jerk(accel, fs)
     iri, iri_condition, _               = compute_iri(accel, fs)
     stats                               = compute_stats(accel)
+
+    # ── RFC J/m (needs distance from GPX) ───────────────────────────────────
+    distance_m = spatial['distance_m'] if spatial else 0.0
+    rfc = compute_rfc_j_per_m(a_w, fs, distance_m, args.mass)
+    # ── ISO 8608 class (needs mean speed from GPX) ──────────────────────────
+    mean_speed = spatial['speed_ms'] if spatial else 0.0
+    iso_class, gd_n0 = compute_iso8608_class(a_w, fs, mean_speed)
 
     # Offline event detection — works the same for v1, v2, and v3 files.
     events = detect_events_offline(accel, gyro)
@@ -522,40 +779,107 @@ def main():
     wheelie_count    = int((events['kind'] == 'wheelie').sum())
     tilt_count       = int((events['kind'] == 'tilt').sum())
 
-    # Console summary
-    print(f"\nRMS           : {rms_full:.3f} m/s²")
-    print(f"VDV           : {vdv:.2f} m/s^1.75  →  {vdv_risk} health risk")
-    print(f"IRI estimate  : {iri:.1f} m/km  →  {iri_condition}")
-    print(f"Dominant freq : {dom_band}")
-    print(f"Bumps ≥{BUMP_MAG} m/s²       : {bump_count}")
-    print(f"Heavy bumps ≥{HEAVY_BUMP_MAG} m/s²  : {heavy_bump_count}")
-    print(f"Wheelies / tilts (≥{ANGULAR_RATE} rad/s): {wheelie_count} / {tilt_count}")
-    print(f"Jerk obstacles: {len(obstacles)}")
-    print(f"Max magnitude : {stats['max']:.2f} m/s²")
-    print(f"p95 magnitude : {stats['p95']:.2f} m/s²")
+    # ── Console summary ─────────────────────────────────────────────────────
+    print(f"\nRoad profile (raw phone, Wk-weighted vertical):")
+    if iso_class:
+        print(f"  ISO 8608 class : {iso_class}  (Gd(n₀)={gd_n0:.2e} m³)"
+              f"  →  {ISO8608_LABELS.get(iso_class, '')}")
+    print(f"  RMS (Wk, raw)  : {rms_full:.3f} m/s²")
+    print(f"  VDV (Wk, raw)  : {vdv:.2f} m/s^1.75  →  {vdv_risk} health risk")
+    print(f"  IRI proxy      : {iri:.1f} m/km (custom RMS×12 scaling)  →  {iri_condition}")
 
-    # One-liner log entry
+    print(f"\nRider exposure (geometry factor {args.geom_factor:.1f}):")
+    print(f"  RMS (Wk, rider): {rms_rider:.3f} m/s²")
+    print(f"  VDV (Wk, rider): {vdv_rider:.2f} m/s^1.75  →  {vdv_rider_risk} health risk")
+
+    print(f"\nEnergy:")
+    if np.isfinite(rfc):
+        print(f"  RFC            : {rfc:.2f} J/m  (m={args.mass:.0f} kg, "
+              f"distance {distance_m/1000:.2f} km from GPX)")
+    else:
+        print(f"  RFC            : n/a (no distance — GPX missing)")
+
+    print(f"\nLegacy (raw |a|−g magnitude, pre-ISO-audit):")
+    print(f"  RMS (raw |a|)  : {rms_raw:.3f} m/s²")
+    print(f"  VDV (raw |a|)  : {vdv_raw:.2f} m/s^1.75  →  {vdv_raw_risk} health risk")
+
+    print(f"\nEvents:")
+    print(f"  Dominant freq band     : {dom_band}")
+    print(f"  Bumps ≥{BUMP_MAG} m/s²        : {bump_count}")
+    print(f"  Heavy bumps ≥{HEAVY_BUMP_MAG} m/s² : {heavy_bump_count}")
+    print(f"  Wheelies / tilts (≥{ANGULAR_RATE} rad/s): {wheelie_count} / {tilt_count}")
+    print(f"  Jerk obstacles         : {len(obstacles)}")
+    print(f"  Max magnitude          : {stats['max']:.2f} m/s²")
+    print(f"  p95 magnitude          : {stats['p95']:.2f} m/s²")
+
+    # One-liner log entry (now with the ISO-correct numbers and class).
+    iso_str = f"ISO8608:{iso_class}" if iso_class else "ISO8608:n/a"
+    rfc_str = f"{rfc:.1f}J/m" if np.isfinite(rfc) else "n/a"
     log_line = (
         f"Session {session_name} | "
-        f"Duration: {accel['t_s'].iloc[-1]:.1f}s | "
-        f"RMS: {rms_full:.2f} m/s² | "
-        f"VDV: {vdv:.1f} ({vdv_risk}) | "
-        f"IRI est: {iri:.1f} m/km | "
+        f"Duration: {duration_s:.1f}s | "
+        f"{iso_str} | "
+        f"RMS_Wk: {rms_full:.2f} m/s² | "
+        f"VDV_Wk: {vdv:.1f} ({vdv_risk}) | "
+        f"VDV_rider: {vdv_rider:.1f} ({vdv_rider_risk}) | "
+        f"RFC: {rfc_str} | "
+        f"IRI proxy: {iri:.1f} m/km | "
         f"Bumps: {bump_count} | "
         f"Heavy bumps: {heavy_bump_count} | "
         f"Obstacles: {len(obstacles)}"
     )
     print(f"\n{log_line}")
 
-    # Save text report
-    gen_line = f"File generation: {generation_banner(generation, sensors_present)}\n\n"
-    txt_path.write_text(gen_line + log_line + "\n\nBand power:\n" +
-                        "\n".join(f"  {k}: {v:.4f}" for k, v in band_power.items()) +
-                        f"\n\nStats:\n" +
-                        "\n".join(f"  {k}: {v:.4f}" for k, v in stats.items()),
-                        encoding='utf-8')
+    # ── Text report ─────────────────────────────────────────────────────────
+    sections = [f"File generation: {generation_banner(generation, sensors_present)}\n"]
+    sections.append(f"Sample rate: {fs:.1f} Hz")
+    sections.append(f"Duration: {duration_s:.1f} s\n")
+    if spatial:
+        s_lat, s_lon = spatial['start']; e_lat, e_lon = spatial['end']
+        bl_lat, tr_lat, bl_lon, tr_lon = spatial['bbox']
+        sections.append(
+            "Spatial:\n"
+            f"  start         : {s_lat:.5f}, {s_lon:.5f}\n"
+            f"  end           : {e_lat:.5f}, {e_lon:.5f}\n"
+            f"  bbox          : {bl_lat:.4f}–{tr_lat:.4f}, {bl_lon:.4f}–{tr_lon:.4f}\n"
+            f"  distance      : {spatial['distance_m']/1000:.2f} km\n"
+            f"  mean speed    : {spatial['speed_ms']*3.6:.2f} km/h\n"
+            f"  gpx source    : {spatial['gpx_name']}"
+        )
+    road_block = ["Road profile (raw phone, Wk-weighted vertical):"]
+    if iso_class:
+        road_block.append(f"  ISO 8608 class : {iso_class}  (Gd(n₀)={gd_n0:.2e} m³)")
+    road_block.append(f"  RMS (Wk, raw)  : {rms_full:.3f} m/s²")
+    road_block.append(f"  VDV (Wk, raw)  : {vdv:.2f} m/s^1.75 ({vdv_risk})")
+    road_block.append(f"  IRI proxy      : {iri:.1f} m/km ({iri_condition})")
+    sections.append("\n".join(road_block))
+    sections.append(
+        "Rider exposure (geometry factor {0:.1f}):\n"
+        "  RMS (Wk, rider): {1:.3f} m/s²\n"
+        "  VDV (Wk, rider): {2:.2f} m/s^1.75 ({3})".format(
+            args.geom_factor, rms_rider, vdv_rider, vdv_rider_risk)
+    )
+    sections.append(
+        f"Energy:\n"
+        f"  RFC : {rfc:.2f} J/m  (m={args.mass:.0f} kg, "
+        f"distance from GPX)" if np.isfinite(rfc)
+        else "Energy:\n  RFC : n/a (GPX missing)"
+    )
+    sections.append(
+        f"Legacy (raw |a|−g magnitude, pre-ISO-audit):\n"
+        f"  RMS (raw |a|) : {rms_raw:.3f} m/s²\n"
+        f"  VDV (raw |a|) : {vdv_raw:.2f} m/s^1.75 ({vdv_raw_risk})"
+    )
+    sections.append(
+        "Events:\n" + log_line
+    )
+    sections.append("Band power:\n" +
+                    "\n".join(f"  {k}: {v:.4f}" for k, v in band_power.items()))
+    sections.append("Stats:\n" +
+                    "\n".join(f"  {k}: {v:.4f}" for k, v in stats.items()))
+    txt_path.write_text("\n\n".join(sections) + "\n", encoding='utf-8')
 
-    # Plot
+    # Plot (unchanged — top-line numbers still come from the same techniques).
     print(f"\nGenerating chart → {png_path.name} ...")
     plot_report(accel, freqs, psd, dom_band, band_power,
                 t_rms, rms_windows,
