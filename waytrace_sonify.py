@@ -30,7 +30,7 @@ import pandas as pd
 from mido import Message, MidiFile, MidiTrack, MetaMessage, bpm2tempo
 
 from waytrace_analysis import (
-    GRAVITY, SAMPLE_RATE,
+    GRAVITY,
     load_csv, split_sensors, detect_events_offline,
 )
 
