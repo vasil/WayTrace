@@ -512,15 +512,21 @@ def auto_discover_gpx(csv_path: Path) -> Path | None:
     return candidate if candidate.exists() else None
 
 
-def compute_spatial_header(gpx_path: Path, duration_s: float):
-    """Distance, mean speed, bounding box, start/end coords. All from GPX."""
+def compute_spatial_header(gpx_path: Path, duration_s: float,
+                           effective_duration_s: float | None = None):
+    """Distance, mean speed, bounding box, start/end coords. All from GPX.
+    If `effective_duration_s` is provided (= duration minus any pause-gaps
+    > 30 s in the accel timestamps), mean speed is computed against that
+    instead — gives the actual pushing speed when a session contains a
+    long pause for a coffee break."""
     pts = parse_gpx(gpx_path)
     if len(pts) < 2:
         return None
     lat = pts[:, 0]; lon = pts[:, 1]
     seg = _haversine_m(lat[:-1], lon[:-1], lat[1:], lon[1:])
     distance_m = float(seg.sum())
-    speed_ms = distance_m / duration_s if duration_s > 0 else 0.0
+    effdur = effective_duration_s if effective_duration_s else duration_s
+    speed_ms = distance_m / effdur if effdur > 0 else 0.0
     return {
         'start':       (float(lat[0]),  float(lon[0])),
         'end':         (float(lat[-1]), float(lon[-1])),
@@ -528,8 +534,25 @@ def compute_spatial_header(gpx_path: Path, duration_s: float):
                         float(lon.min()), float(lon.max())),
         'distance_m':  distance_m,
         'speed_ms':    speed_ms,
+        'duration_s':  duration_s,
+        'effective_s': effdur,
         'gpx_name':    gpx_path.name,
     }
+
+
+def effective_duration(accel: pd.DataFrame, gap_threshold_s: float = 30.0
+                       ) -> tuple[float, list[tuple[float, float]]]:
+    """Subtract big gaps in the accel timestamps from the total duration.
+    Returns (effective_seconds, list of (t_start, gap_seconds) for each gap)."""
+    t = accel['t_s'].to_numpy()
+    if len(t) < 2:
+        return float(t[-1] - t[0]) if len(t) else 0.0, []
+    dt = np.diff(t)
+    big = np.where(dt > gap_threshold_s)[0]
+    gaps = [(float(t[i]), float(dt[i])) for i in big]
+    total = float(t[-1] - t[0])
+    effective = total - float(dt[big].sum())
+    return effective, gaps
 
 
 # ── Technique 7: Statistical Profile ─────────────────────────────────────────
@@ -719,11 +742,20 @@ def main():
     print(f"Duration      : {duration_s:.1f} s")
     print(f"Sample rate   : {fs:.1f} Hz")
 
+    # ── Effective duration (subtract any pause-gaps in the recording) ──────
+    effdur_s, gaps = effective_duration(accel)
+    if gaps:
+        print(f"\nRecording gaps (pause+resume) > 30 s:")
+        for t_at, gap_s in gaps:
+            print(f"  at {t_at/60:.1f} min: {gap_s/60:.1f} min paused")
+        print(f"Effective recording time: {effdur_s/60:.1f} min "
+              f"(gross {duration_s/60:.1f} min)")
+
     # ── Spatial header (GPX) ────────────────────────────────────────────────
     gpx_path = Path(args.gpx) if args.gpx else auto_discover_gpx(csv_path)
     spatial = None
     if gpx_path and gpx_path.exists():
-        spatial = compute_spatial_header(gpx_path, duration_s)
+        spatial = compute_spatial_header(gpx_path, duration_s, effdur_s)
     if spatial:
         print(f"\nSpatial (from {spatial['gpx_name']}):")
         s_lat, s_lon = spatial['start']
@@ -733,7 +765,8 @@ def main():
         print(f"  end           : {e_lat:.5f}, {e_lon:.5f}")
         print(f"  bbox          : {bl_lat:.4f}–{tr_lat:.4f}, {bl_lon:.4f}–{tr_lon:.4f}")
         print(f"  distance      : {spatial['distance_m']/1000:.2f} km")
-        print(f"  mean speed    : {spatial['speed_ms']*3.6:.2f} km/h")
+        print(f"  mean speed    : {spatial['speed_ms']*3.6:.2f} km/h "
+              f"(over {spatial['effective_s']/60:.1f} min of pushing)")
     else:
         print("\nSpatial: no GPX found (skipped distance, mean-speed, ISO 8608)")
 
