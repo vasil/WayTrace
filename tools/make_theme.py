@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""Regenerate the WayTrace "Push Off" start-cue WAV.
+"""Regenerate the WayTrace "Push Off" SYNC-clapper chime WAV.
 
 Output: app/src/main/res/raw/waytrace_theme.wav (44.1 kHz, mono, 16-bit).
-Notes : C4 E4 G4 A4 C5 with three short pickups and two held arrivals.
-See Drive doc WAYTRACE-THEME-PUSH-OFF.md for the full spec.
+Notes : C5 E5 G5 A5 C6 — one octave up from the original sketch so the
+        high frequencies cut through low-frequency street noise (traffic
+        rumble, wind) and the Akaso V50 X mic captures them cleanly.
+        Three short pickups and two held arrivals (~1.8 s).
+This is the OSI-016 sync-clapper signature. See Drive doc
+WAYTRACE-THEME-PUSH-OFF.md for the full spec.
 """
 from pathlib import Path
 import numpy as np
@@ -24,11 +28,11 @@ def note(f: float, d: float, gap: float = 0.04) -> np.ndarray:
 
 def main() -> None:
     out = np.concatenate([
-        note(261.63, 0.22),   # do  (C4)
-        note(329.63, 0.22),   # mi  (E4)
-        note(392.00, 0.22),   # sol (G4)
-        note(440.00, 0.50),   # la  (A4)  — held
-        note(523.25, 0.50, gap=0),  # do' (C5) — resolve up
+        note(523.25, 0.22),   # do  (C5)
+        note(659.26, 0.22),   # mi  (E5)
+        note(783.99, 0.22),   # sol (G5)
+        note(880.00, 0.50),   # la  (A5)  — held
+        note(1046.50, 0.50, gap=0),  # do' (C6) — resolve up
     ])
     path = Path(__file__).resolve().parents[1] / "app/src/main/res/raw/waytrace_theme.wav"
     path.parent.mkdir(parents=True, exist_ok=True)

@@ -38,6 +38,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnToggle: Button
     private lateinit var btnStop: Button
     private lateinit var btnPin: Button
+    private lateinit var btnSync: Button
     private lateinit var tvStatus: TextView
 
     private val connection = object : ServiceConnection {
@@ -65,6 +66,7 @@ class MainActivity : AppCompatActivity() {
         btnToggle = findViewById(R.id.btnToggle)
         btnStop   = findViewById(R.id.btnStop)
         btnPin    = findViewById(R.id.btnPin)
+        btnSync   = findViewById(R.id.btnSync)
         tvStatus  = findViewById(R.id.tvStatus)
 
         btnToggle.setOnClickListener {
@@ -92,6 +94,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         btnPin.setOnClickListener { service?.pinpoint() }
+
+        btnSync.setOnClickListener { service?.syncPulse() }
 
         installLiveModeEasterEgg()
 
@@ -281,6 +285,7 @@ class MainActivity : AppCompatActivity() {
                 btnToggle.setTextColor(0xFF00CC00.toInt())
                 btnStop.visibility = View.GONE
                 btnPin.visibility  = View.GONE
+                btnSync.visibility = View.GONE
                 tvStatus.text = "${statusPrefix()}Ready"
             }
             RecordingState.RECORDING -> {
@@ -290,8 +295,11 @@ class MainActivity : AppCompatActivity() {
                 btnStop.backgroundTintList = color(0xFFCC0000)
                 btnStop.visibility = View.VISIBLE
                 btnPin.visibility  = View.VISIBLE
+                btnSync.visibility = View.VISIBLE
                 val pinCount = svc?.pinpointCount ?: 0
                 btnPin.text = if (pinCount == 0) "PIN" else "PIN $pinCount"
+                val syncCount = svc?.syncPulseCount ?: 0
+                btnSync.text = if (syncCount == 0) "SYNC" else "SYNC $syncCount"
                 val s      = (svc?.elapsedMs ?: 0L) / 1000
                 val dur    = "%02d:%02d".format((s % 3600) / 60, s % 60)
                 val sizeMb = "%.1f".format((svc?.getFileSize() ?: 0L) / (1024.0 * 1024.0))
@@ -304,8 +312,11 @@ class MainActivity : AppCompatActivity() {
                 btnStop.backgroundTintList = color(0xFFCC0000)
                 btnStop.visibility = View.VISIBLE
                 btnPin.visibility  = View.VISIBLE
+                btnSync.visibility = View.VISIBLE
                 val pinCount = svc?.pinpointCount ?: 0
                 btnPin.text = if (pinCount == 0) "PIN" else "PIN $pinCount"
+                val syncCount = svc?.syncPulseCount ?: 0
+                btnSync.text = if (syncCount == 0) "SYNC" else "SYNC $syncCount"
                 val s      = (svc?.elapsedMs ?: 0L) / 1000
                 val dur    = "%02d:%02d".format((s % 3600) / 60, s % 60)
                 val sizeMb = "%.1f".format((svc?.getFileSize() ?: 0L) / (1024.0 * 1024.0))
@@ -317,6 +328,7 @@ class MainActivity : AppCompatActivity() {
                 btnToggle.setTextColor(0xFF00CC00.toInt())
                 btnStop.visibility = View.GONE
                 btnPin.visibility  = View.GONE
+                btnSync.visibility = View.GONE
                 val sizeKb = (svc?.getFileSize() ?: 0L) / 1024
                 val s      = (svc?.elapsedMs ?: 0L) / 1000
                 val dur    = "%02d:%02d".format((s % 3600) / 60, s % 60)

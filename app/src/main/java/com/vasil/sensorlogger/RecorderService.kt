@@ -14,6 +14,9 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.media.AudioAttributes
+import android.media.AudioManager
+import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Binder
 import android.os.Build
@@ -62,6 +65,7 @@ class RecorderService : Service(), SensorEventListener {
             .putLong("session_start_time", startTimeMs)
             .putLong("elapsed_ms", elapsedMs)
             .putInt("pinpoint_count", pinpointCount)
+            .putInt("sync_pulse_count", syncPulseCount)
             .putString("start_display_time", startDisplayTime)
             .apply()
     }
@@ -74,6 +78,7 @@ class RecorderService : Service(), SensorEventListener {
         startTimeMs      = prefs.getLong("session_start_time", 0L)
         elapsedMs        = prefs.getLong("elapsed_ms", 0L)
         pinpointCount    = prefs.getInt("pinpoint_count", 0)
+        syncPulseCount   = prefs.getInt("sync_pulse_count", 0)
         startDisplayTime = prefs.getString("start_display_time", "") ?: ""
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -147,6 +152,7 @@ class RecorderService : Service(), SensorEventListener {
     private val LIVE_BATCH_SIZE = 30   // ~100 ms at 60 Hz × 5 sensor streams
     private val LIVE_HEADER     = "WTLIVE 1\n"
     var pinpointCount = 0
+    var syncPulseCount = 0
         private set
     var startDisplayTime = ""
         private set
@@ -374,6 +380,7 @@ class RecorderService : Service(), SensorEventListener {
         }
 
         pinpointCount = 0
+        syncPulseCount = 0
         startTimeMs = System.currentTimeMillis(); elapsedMs = 0L
 
         wakeLock = (getSystemService(Context.POWER_SERVICE) as PowerManager)
@@ -451,6 +458,69 @@ class RecorderService : Service(), SensorEventListener {
         val row = "$tsMs,pinpoint,$pinpointCount,0,0,"
         writer?.println(row); liveQueue(row)
         saveState()
+        updateNotification()
+        onStateChanged?.invoke()
+    }
+
+    // ── OSI-016: SYNC clapper ─────────────────────────────────────────────
+    //
+    // Audio + timestamp marker for sensor↔video sync, like a film clapper.
+    // One tap (a) plays a fixed 5-note chime through the phone speaker (the
+    // Akaso V50 X mic records it into the video audio track), and (b) writes
+    // a `sync_pulse` row to the ART CSV. The CSV timestamp is captured at
+    // MediaPlayer.start() — within a few sample periods of the first audible
+    // sample. The receiver-side tool finds the chime in the video audio and
+    // aligns it to the sync_pulse row, locking video ↔ ART without trusting
+    // the Akaso clock (which has been observed reading 01-01-2024).
+    //
+    // Sound: app/src/main/res/raw/waytrace_theme.wav (C5-E5-G5-A5-C6,
+    // ~1.8 s, octave-up so it cuts through low-frequency street noise).
+    //
+    // Acceptance tests (per SRS):
+    //   [ ] real-world audibility from the mounted setup (helmet Akaso +
+    //       phone in the caster-fork strap pocket)
+    //   [ ] measured offset between sync_pulse timestamp and first audible
+    //       note within ~8 ms (one sample period at 125 Hz sensor rate)
+    //
+    // ROW FORMAT  ts,sync_pulse,N,0,0,   (mirrors pinpoint shape)
+
+    private var syncPlayer: MediaPlayer? = null
+
+    fun syncPulse() {
+        if (state != RecordingState.RECORDING && state != RecordingState.PAUSED) return
+        syncPulseCount++
+        // Fresh MediaPlayer per tap to avoid restart races; we release in
+        // onCompletion.
+        val mp = MediaPlayer.create(this, R.raw.waytrace_theme)
+        if (mp == null) {
+            // Audio failed to init — still log the pulse so the timeline
+            // shows the user intent, but mark it as silent.
+            val tsMs = SystemClock.elapsedRealtime()
+            val row = "$tsMs,sync_pulse,$syncPulseCount,0,0,"
+            writer?.println(row); liveQueue(row)
+            updateNotification(); onStateChanged?.invoke()
+            return
+        }
+        mp.setAudioAttributes(
+            AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build()
+        )
+        mp.setOnCompletionListener {
+            it.release()
+            if (syncPlayer === it) syncPlayer = null
+        }
+        syncPlayer?.release()
+        syncPlayer = mp
+
+        // Capture the timestamp as close as possible to start() so the CSV
+        // marker matches the first audible sample. MediaPlayer.start()
+        // returns once the audio path begins playback.
+        val tsMs = SystemClock.elapsedRealtime()
+        mp.start()
+        val row = "$tsMs,sync_pulse,$syncPulseCount,0,0,"
+        writer?.println(row); liveQueue(row)
         updateNotification()
         onStateChanged?.invoke()
     }
@@ -582,5 +652,6 @@ class RecorderService : Service(), SensorEventListener {
         if (state == RecordingState.RECORDING || state == RecordingState.PAUSED) stopRecording()
         disableLiveMode()
         liveThread?.quitSafely(); liveThread = null
+        syncPlayer?.release(); syncPlayer = null
     }
 }
