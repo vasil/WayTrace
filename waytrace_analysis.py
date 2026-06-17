@@ -416,7 +416,7 @@ def compute_rider_exposure(a_w: np.ndarray,
     return a_w / geom_factor
 
 
-# ── Technique 7b: RFC — energy delivered to the rolling mass per meter ──────
+# ── Technique 7b: ED — vibration energy density delivered per meter ─────────
 #
 # Operational definition: the work integral of the vertical vibration force
 # acting on the rolling mass, divided by the distance pushed.
@@ -425,15 +425,18 @@ def compute_rider_exposure(a_w: np.ndarray,
 #   v_w(t) = ∫ a_w(t) dt            [m/s]  Wk-weighted vertical velocity
 #   P(t)   = |F_w · v_w|            [W]    instantaneous absolute mech power
 #   E      = ∫ P dt                 [J]    total energy delivered
-#   RFC    = E / distance           [J/m]  = N, interpretable as the average
+#   ED     = E / distance           [J/m]  = N, interpretable as the average
 #                                          vertical resistive force exerted
 #                                          on the rolling mass by the road.
 #
-# Not a standardised metric, but cleanly dimensional and comparable across
-# pushes. Default mass = 78 kg (SRS-CURRENT TOTAL_ROLLING_MASS_KG).
+# NAMING NOTE — see RECONCILIATION-LEDGER.md Part A: this metric was briefly
+# called "RFC" in the first OSI-006b commit, but RFC is reserved for the
+# 0-10 dimensionless relative-fatigue-cost scale. The physical-energy-per-
+# meter metric is ED (Energy Density). The actual RFC formula lives in the
+# open-streets-initiative repo (commands/report.py) and is a separate score.
 
-def compute_rfc_j_per_m(a_w: np.ndarray, fs: float, distance_m: float,
-                        mass_kg: float = TOTAL_ROLLING_MASS_KG) -> float:
+def compute_ed_j_per_m(a_w: np.ndarray, fs: float, distance_m: float,
+                       mass_kg: float = TOTAL_ROLLING_MASS_KG) -> float:
     if not distance_m or distance_m <= 0:
         return float('nan')
     # Mean-subtract before integrating so we don't accumulate a velocity drift.
@@ -710,7 +713,7 @@ def main():
                          f'{GEOMETRY_FACTOR_CASTER_COMPLIANT} for fabric-strap '
                          'pocket over the caster).')
     ap.add_argument('--mass', type=float, default=TOTAL_ROLLING_MASS_KG,
-                    help=f'Rolling mass in kg for RFC (default '
+                    help=f'Rolling mass in kg for ED (default '
                          f'{TOTAL_ROLLING_MASS_KG}).')
     args = ap.parse_args()
 
@@ -798,9 +801,9 @@ def main():
     iri, iri_condition, _               = compute_iri(accel, fs)
     stats                               = compute_stats(accel)
 
-    # ── RFC J/m (needs distance from GPX) ───────────────────────────────────
+    # ── ED J/m  energy density per meter (needs distance from GPX) ──────────
     distance_m = spatial['distance_m'] if spatial else 0.0
-    rfc = compute_rfc_j_per_m(a_w, fs, distance_m, args.mass)
+    ed = compute_ed_j_per_m(a_w, fs, distance_m, args.mass)
     # ── ISO 8608 class (needs mean speed from GPX) ──────────────────────────
     mean_speed = spatial['speed_ms'] if spatial else 0.0
     iso_class, gd_n0 = compute_iso8608_class(a_w, fs, mean_speed)
@@ -825,12 +828,12 @@ def main():
     print(f"  RMS (Wk, rider): {rms_rider:.3f} m/s²")
     print(f"  VDV (Wk, rider): {vdv_rider:.2f} m/s^1.75  →  {vdv_rider_risk} health risk")
 
-    print(f"\nEnergy:")
-    if np.isfinite(rfc):
-        print(f"  RFC            : {rfc:.2f} J/m  (m={args.mass:.0f} kg, "
+    print(f"\nEnergy density (ED, J/m — NOT the dimensionless RFC; see RECONCILIATION-LEDGER):")
+    if np.isfinite(ed):
+        print(f"  ED             : {ed:.2f} J/m  (m={args.mass:.0f} kg, "
               f"distance {distance_m/1000:.2f} km from GPX)")
     else:
-        print(f"  RFC            : n/a (no distance — GPX missing)")
+        print(f"  ED             : n/a (no distance — GPX missing)")
 
     print(f"\nLegacy (raw |a|−g magnitude, pre-ISO-audit):")
     print(f"  RMS (raw |a|)  : {rms_raw:.3f} m/s²")
@@ -847,7 +850,7 @@ def main():
 
     # One-liner log entry (now with the ISO-correct numbers and class).
     iso_str = f"ISO8608:{iso_class}" if iso_class else "ISO8608:n/a"
-    rfc_str = f"{rfc:.1f}J/m" if np.isfinite(rfc) else "n/a"
+    ed_str = f"{ed:.1f}J/m" if np.isfinite(ed) else "n/a"
     log_line = (
         f"Session {session_name} | "
         f"Duration: {duration_s:.1f}s | "
@@ -855,7 +858,7 @@ def main():
         f"RMS_Wk: {rms_full:.2f} m/s² | "
         f"VDV_Wk: {vdv:.1f} ({vdv_risk}) | "
         f"VDV_rider: {vdv_rider:.1f} ({vdv_rider_risk}) | "
-        f"RFC: {rfc_str} | "
+        f"ED: {ed_str} | "
         f"IRI proxy: {iri:.1f} m/km | "
         f"Bumps: {bump_count} | "
         f"Heavy bumps: {heavy_bump_count} | "
@@ -893,10 +896,10 @@ def main():
             args.geom_factor, rms_rider, vdv_rider, vdv_rider_risk)
     )
     sections.append(
-        f"Energy:\n"
-        f"  RFC : {rfc:.2f} J/m  (m={args.mass:.0f} kg, "
-        f"distance from GPX)" if np.isfinite(rfc)
-        else "Energy:\n  RFC : n/a (GPX missing)"
+        f"Energy density (ED, J/m):\n"
+        f"  ED : {ed:.2f} J/m  (m={args.mass:.0f} kg, "
+        f"distance from GPX)" if np.isfinite(ed)
+        else "Energy density (ED, J/m):\n  ED : n/a (GPX missing)"
     )
     sections.append(
         f"Legacy (raw |a|−g magnitude, pre-ISO-audit):\n"
