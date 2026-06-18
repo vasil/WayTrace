@@ -35,6 +35,11 @@ class MainActivity : AppCompatActivity() {
     private var stopConfirmPending = false
     private val stopConfirmHandler = Handler(Looper.getMainLooper())
 
+    // SYNC clapper double-press protection — OSI-016.
+    private var lastSyncAcceptedMs = 0L
+    private val SYNC_COOLDOWN_MS = 10_000L
+    private val syncCooldownHandler = Handler(Looper.getMainLooper())
+
     private lateinit var btnToggle: Button
     private lateinit var btnStop: Button
     private lateinit var btnPin: Button
@@ -95,7 +100,19 @@ class MainActivity : AppCompatActivity() {
 
         btnPin.setOnClickListener { service?.pinpoint() }
 
-        btnSync.setOnClickListener { service?.syncPulse() }
+        // SYNC clapper — 10s cooldown so a "did it work?" double-tap can't
+        // produce two markers. Per OSI-016: cooldown is the first defence,
+        // numbered labelled sync_pulse rows are the second (no clap can
+        // overwrite an earlier one).
+        btnSync.setOnClickListener {
+            val svc = service ?: return@setOnClickListener
+            val now = android.os.SystemClock.elapsedRealtime()
+            if (now - lastSyncAcceptedMs < SYNC_COOLDOWN_MS) return@setOnClickListener
+            lastSyncAcceptedMs = now
+            svc.syncPulse()
+            updateUI()
+            syncCooldownHandler.postDelayed({ updateUI() }, SYNC_COOLDOWN_MS)
+        }
 
         installLiveModeEasterEgg()
 
@@ -268,6 +285,22 @@ class MainActivity : AppCompatActivity() {
 
     private fun color(c: Long) = ColorStateList.valueOf(c.toInt())
 
+    /** Grey the SYNC button + black text while cooldown is active; restore
+     *  CYAN+BLACK once the 10 s window has elapsed.  */
+    private fun applySyncCooldownStyle() {
+        val now = android.os.SystemClock.elapsedRealtime()
+        val cooling = (now - lastSyncAcceptedMs) < SYNC_COOLDOWN_MS
+        if (cooling) {
+            btnSync.backgroundTintList = color(0xFF555555)
+            btnSync.setTextColor(0xFF222222.toInt())
+            btnSync.isEnabled = false
+        } else {
+            btnSync.backgroundTintList = color(0xFF00CCDD)
+            btnSync.setTextColor(0xFF000000.toInt())
+            btnSync.isEnabled = true
+        }
+    }
+
     private fun updateUI() {
         val svc   = service
         val state = svc?.state ?: RecordingState.READY
@@ -300,6 +333,7 @@ class MainActivity : AppCompatActivity() {
                 btnPin.text = if (pinCount == 0) "PIN" else "PIN $pinCount"
                 val syncCount = svc?.syncPulseCount ?: 0
                 btnSync.text = if (syncCount == 0) "SYNC" else "SYNC $syncCount"
+                applySyncCooldownStyle()
                 val s      = (svc?.elapsedMs ?: 0L) / 1000
                 val dur    = "%02d:%02d".format((s % 3600) / 60, s % 60)
                 val sizeMb = "%.1f".format((svc?.getFileSize() ?: 0L) / (1024.0 * 1024.0))
@@ -317,6 +351,7 @@ class MainActivity : AppCompatActivity() {
                 btnPin.text = if (pinCount == 0) "PIN" else "PIN $pinCount"
                 val syncCount = svc?.syncPulseCount ?: 0
                 btnSync.text = if (syncCount == 0) "SYNC" else "SYNC $syncCount"
+                applySyncCooldownStyle()
                 val s      = (svc?.elapsedMs ?: 0L) / 1000
                 val dur    = "%02d:%02d".format((s % 3600) / 60, s % 60)
                 val sizeMb = "%.1f".format((svc?.getFileSize() ?: 0L) / (1024.0 * 1024.0))

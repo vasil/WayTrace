@@ -19,16 +19,17 @@
         android:backgroundTint="#888888" />
 
     <LinearLayout
-        android:layout_width="wrap_content"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
         android:layout_marginTop="20dp">
 
         <Button
             android:id="@+id/btnStop"
-            android:layout_width="120dp"
+            android:layout_width="0dp"
             android:layout_height="52dp"
-            android:layout_marginEnd="12dp"
+            android:layout_weight="1"
+            android:layout_marginEnd="8dp"
             android:text="STOP"
             android:textSize="15sp"
             android:textColor="#FFFFFF"
@@ -38,8 +39,10 @@
 
         <Button
             android:id="@+id/btnPin"
-            android:layout_width="120dp"
+            android:layout_width="0dp"
             android:layout_height="52dp"
+            android:layout_weight="1"
+            android:layout_marginEnd="8dp"
             android:text="PIN"
             android:textSize="15sp"
             android:textColor="#FFFFFF"
@@ -49,9 +52,9 @@
 
         <Button
             android:id="@+id/btnSync"
-            android:layout_width="120dp"
+            android:layout_width="0dp"
             android:layout_height="52dp"
-            android:layout_marginStart="12dp"
+            android:layout_weight="1"
             android:text="SYNC"
             android:textSize="15sp"
             android:textColor="#000000"
