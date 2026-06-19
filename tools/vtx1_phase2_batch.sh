@@ -130,6 +130,28 @@ for base in "${BASES[@]}"; do
     fi
     log "    dashboard: $((t_d - t_c))s, $(du -h "$FINAL" | cut -f1)"
 
+    # 4) Optional: upload to YouTube (unlisted).
+    # GATED OFF by default. Your SRS says "NO video goes to YouTube until
+    # ALL plates are confirmed blurred" and OSI-007 still has the known
+    # plate-miss gap; flip the gate explicitly when GDPR hardening lands:
+    #     UPLOAD_TO_YOUTUBE=1 ~/waytrace-video/vtx1_phase2_batch.sh
+    if [ "${UPLOAD_TO_YOUTUBE:-0}" = "1" ]; then
+        log "[4/4] upload to YouTube (privacy=unlisted)"
+        json_counts="$TMP_DIR/${base}_consolidated.json"
+        if ! python -u "$ROOT/youtube_upload.py" \
+                --video "$FINAL" \
+                --title "$TITLE — $(date -d @"$t_d" +%Y-%m-%d)" \
+                --privacy unlisted \
+                --recorded "$(date -d @"$t_d" +%Y-%m-%d)" \
+                ${json_counts:+--json-counts "$json_counts"} \
+                > "$TMP_DIR/${base}_yt.log" 2>&1; then
+            log "    UPLOAD FAILED — see $TMP_DIR/${base}_yt.log"
+        else
+            url=$(tail -1 "$TMP_DIR/${base}_yt.log")
+            log "    uploaded -> $url"
+        fi
+    fi
+
     # Only now is it safe to clean.
     rm -f "$DS" "$OSI"
     log "[DONE $base] total $((t_d - t_a))s -> $FINAL"
