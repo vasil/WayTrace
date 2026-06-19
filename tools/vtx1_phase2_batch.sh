@@ -1,0 +1,141 @@
+#!/bin/bash
+# OSI-007 Phase-2 batch: 4K -> 1080p downscale + osi007_final.py
+# (face/plate blur + YOLO boxes) + osi007_dashboard.py (HUD overlays).
+#
+# Hardened revision (after the 2026-06-18 pandas-missing wipeout):
+#   - PRE-FLIGHT import check up front: fail loud if any dependency
+#     (cv2/numpy/pandas/scipy) is missing — no point burning 11 h on
+#     a pipeline that crashes silently in step 3.
+#   - Step 2 and step 3 each check exit status; if either fails the
+#     intermediates are KEPT (no cleanup) and we abort the loop for
+#     that MOV — easier to recover than to re-run downscale + osi007.
+#   - Step 3 (dashboard) cleanup only happens if the final file is
+#     present and non-empty.
+
+set -uo pipefail
+
+source "$HOME/miniconda3/etc/profile.d/conda.sh"
+conda activate osi007
+
+# ── PRE-FLIGHT ───────────────────────────────────────────────────────────
+# Crash early if dependencies are missing, not 11 h in.
+if ! python -c "import cv2, numpy, pandas, scipy" 2>/dev/null; then
+    echo "[$(date +%H:%M:%S)] PRE-FLIGHT FAILED: missing one of cv2/numpy/pandas/scipy"
+    python -c "import cv2, numpy, pandas, scipy"   # print the actual error
+    exit 1
+fi
+echo "[$(date +%H:%M:%S)] pre-flight imports OK"
+
+ROOT="$HOME/waytrace-video"
+IN_DIR="$HOME/Videos/VIDEO"
+OUT_DIR="$HOME/Videos/VIDEO_dashboard"
+TMP_DIR="$ROOT/tmp"
+LOG="$ROOT/phase2_batch.log"
+ART_DIR="$ROOT/art"
+GPX_DIR="$ROOT/art"
+
+mkdir -p "$OUT_DIR" "$TMP_DIR"
+
+SP=$(python -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")
+NVLIB=""
+for d in "$SP"/nvidia/*/lib; do [ -d "$d" ] && NVLIB="$d:$NVLIB"; done
+export LD_LIBRARY_PATH="$NVLIB:${LD_LIBRARY_PATH:-}"
+
+log() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOG"; }
+
+T0=$(date +%s)
+log "=== PHASE-2 BATCH START (hardened revision) ==="
+log "input dir : $IN_DIR"
+log "output dir: $OUT_DIR"
+
+TITLE="Rear Window Push"
+GPX="$GPX_DIR/GPS-202606181630.gpx"
+
+declare -A ART
+declare -A OFFSET
+ART[20240101_201141]=ART-202606181630.csv; OFFSET[20240101_201141]=-6.9
+ART[20240101_202540]=ART-202606181630.csv; OFFSET[20240101_202540]=831.1
+ART[20240101_203939]=ART-202606181630.csv; OFFSET[20240101_203939]=1669.1
+ART[20240101_205338]=ART-202606181630.csv; OFFSET[20240101_205338]=2507.1
+ART[20240101_214851]=ART-202606181807.csv; OFFSET[20240101_214851]=-7.9
+ART[20240101_220250]=ART-202606181807.csv; OFFSET[20240101_220250]=830.1
+ART[20240101_221649]=ART-202606181807.csv; OFFSET[20240101_221649]=1668.1
+ART[20240101_223047]=ART-202606181807.csv; OFFSET[20240101_223047]=2506.1
+
+BASES=(
+    20240101_201141 20240101_202540 20240101_203939 20240101_205338
+    20240101_214851 20240101_220250 20240101_221649 20240101_223047
+)
+log "queued ${#BASES[@]} MOVs"
+
+for base in "${BASES[@]}"; do
+    SRC="$IN_DIR/${base}.MOV"
+    if [ ! -f "$SRC" ]; then
+        log "skip $base — source missing"; continue
+    fi
+    art_name="${ART[$base]}"
+    offset="${OFFSET[$base]}"
+    ART_PATH="$ART_DIR/$art_name"
+    FINAL="$OUT_DIR/RW-${base#20240101_}-final.mp4"
+    if [ -f "$FINAL" ] && [ "$(stat -c%s "$FINAL")" -gt 1000000 ]; then
+        log "skip $base — $FINAL already exists ($(du -h "$FINAL" | cut -f1))"; continue
+    fi
+
+    DS="$TMP_DIR/${base}_1080p.mp4"
+    OSI="$TMP_DIR/${base}_consolidated.mp4"
+
+    log "--- $base ---"
+    log "  ART=$art_name  offset=${offset}s"
+    t_a=$(date +%s)
+
+    # 1) Downscale 4K -> 1080p (NVENC).
+    log "[1/3] downscale 4K -> 1080p (h264_nvenc, 8 Mbps)"
+    if ! ffmpeg -y -hide_banner -loglevel error \
+        -hwaccel cuda -i "$SRC" \
+        -vf "scale=1920:1080:flags=lanczos" \
+        -c:v h264_nvenc -preset p4 -b:v 8M -pix_fmt yuv420p \
+        -c:a copy "$DS"; then
+        log "    DOWNSCALE FAILED — skipping $base"; continue
+    fi
+    t_b=$(date +%s)
+    log "    downscale: $((t_b - t_a))s, $(du -h "$DS" | cut -f1)"
+
+    # 2) osi007_final.py.
+    log "[2/3] osi007_final.py"
+    if ! python -u "$ROOT/osi007_final.py" "$DS" "$OSI" \
+            > "$TMP_DIR/${base}_osi.log" 2>&1; then
+        log "    OSI007 FAILED — keeping intermediates, skipping $base"
+        log "    see $TMP_DIR/${base}_osi.log"; continue
+    fi
+    t_c=$(date +%s)
+    log "    osi007:    $((t_c - t_b))s, $(du -h "$OSI" 2>/dev/null | cut -f1)"
+
+    # 3) Dashboard HUD overlay.
+    log "[3/3] dashboard HUD overlay"
+    if ! python -u "$ROOT/osi007_dashboard.py" \
+            --video "$OSI" \
+            --art   "$ART_PATH" \
+            --gpx   "$GPX" \
+            --title "$TITLE" \
+            --video-art-offset "$offset" \
+            --out   "$FINAL" \
+            > "$TMP_DIR/${base}_dash.log" 2>&1; then
+        log "    DASHBOARD FAILED — keeping intermediates so we can resume"
+        log "    see $TMP_DIR/${base}_dash.log"; continue
+    fi
+    t_d=$(date +%s)
+    # Verify the final actually got written.
+    if [ ! -f "$FINAL" ] || [ "$(stat -c%s "$FINAL")" -lt 1000000 ]; then
+        log "    DASHBOARD produced no/empty output — keeping intermediates"; continue
+    fi
+    log "    dashboard: $((t_d - t_c))s, $(du -h "$FINAL" | cut -f1)"
+
+    # Only now is it safe to clean.
+    rm -f "$DS" "$OSI"
+    log "[DONE $base] total $((t_d - t_a))s -> $FINAL"
+done
+
+t_end=$(date +%s)
+log "=== PHASE-2 BATCH FINISHED — total $(printf '%dh%dm%ds' $((((t_end-T0)/3600))) $(((t_end-T0)/60%60)) $(((t_end-T0)%60))) ==="
+log "outputs:"
+ls -lh "$OUT_DIR" | tee -a "$LOG"
