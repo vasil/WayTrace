@@ -158,6 +158,38 @@ for base in "${BASES[@]}"; do
 done
 
 t_end=$(date +%s)
-log "=== PHASE-2 BATCH FINISHED — total $(printf '%dh%dm%ds' $((((t_end-T0)/3600))) $(((t_end-T0)/60%60)) $(((t_end-T0)%60))) ==="
-log "outputs:"
+log "=== per-segment processing FINISHED — total $(printf '%dh%dm%ds' $((((t_end-T0)/3600))) $(((t_end-T0)/60%60)) $(((t_end-T0)%60))) ==="
+log "per-segment outputs:"
 ls -lh "$OUT_DIR" | tee -a "$LOG"
+
+# ── Post-loop: concatenate all RW-*-final.mp4 segments into ONE per-push
+# video for upload, per Vasil's "one logical push, one file" decision
+# (2026-06-19). Strava activity = single session, so the camera-split
+# segments are stitched back together. Lossless ffmpeg remux.
+TS_PUSH="$(basename "$GPX" .gpx | sed -E 's/^GPS-//')"
+PUSH_FINAL="$OUT_DIR/RW-PUSH-${TS_PUSH}-final.mp4"
+if [ -x "$ROOT/concat_push.sh" ] && [ ! -f "$PUSH_FINAL" ]; then
+    log "[concat] stitching segments -> RW-PUSH-${TS_PUSH}-final.mp4"
+    if OUT_DIR="$OUT_DIR" "$ROOT/concat_push.sh" "$TS_PUSH" \
+            >> "$LOG" 2>&1; then
+        log "[concat] $(du -h "$PUSH_FINAL" 2>/dev/null | cut -f1) -> $PUSH_FINAL"
+    else
+        log "[concat] FAILED — per-segment files are still in $OUT_DIR"
+    fi
+fi
+
+# ── Optional: upload the concatenated per-push video to YouTube. Same
+# gate as the per-segment upload; runs only with UPLOAD_TO_YOUTUBE=1.
+if [ "${UPLOAD_TO_YOUTUBE:-0}" = "1" ] && [ -f "$PUSH_FINAL" ]; then
+    log "[concat upload] sending $PUSH_FINAL to YouTube (unlisted)"
+    if ! python -u "$ROOT/youtube_upload.py" \
+            --video "$PUSH_FINAL" \
+            --title "$TITLE — $(date +%Y-%m-%d)" \
+            --privacy unlisted \
+            --recorded "$(date +%Y-%m-%d)" \
+            > "$TMP_DIR/push_yt.log" 2>&1; then
+        log "[concat upload] FAILED — see $TMP_DIR/push_yt.log"
+    else
+        log "[concat upload] $(tail -1 "$TMP_DIR/push_yt.log")"
+    fi
+fi
