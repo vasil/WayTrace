@@ -70,7 +70,7 @@ CASTER_TRAIL_CM = 5.0 # steering pin → contact — CONFIRMED
 PHONE_HEIGHT_CM = 35.0 # floor to phone center — CONFIRMED
 PHONE_FORWARD_OFFSET_CM = 15.0 # phone ahead of caster — CONFIRMED
 PHONE_LATERAL_OFFSET_CM = 3.0 # phone outward from centerline — CONFIRMED
-PHONE_MOUNT_TYPE = "fabric_strap_pocket" # compliant
+ PHONE_MOUNT_TYPE = "fabric_strap_pocket" # compliant
 RIDER_WEIGHT_KG = 63.0 # CONFIRMED
 CHAIR_WEIGHT_KG = 15.0 # old wheelchair — CONFIRMED
 TOTAL_ROLLING_MASS_KG = 78.0 # rider + chair
@@ -149,6 +149,11 @@ ready to upload. Each stage feeds the next; nothing skips.
  AND the color-coded annotation overlay carried into step 5.
  - Identification comes FIRST so step 4 can search inside each box
  with high prior, instead of full-frame.
+ - TRACKING (required for step 4 temporal persistence): assign a
+ STABLE TRACK ID to each vehicle and each person across frames
+ (IoU/centroid tracker or built-in YOLO tracker). The plate/face
+ blur in step 4 is applied per TRACK across its whole lifespan,
+ not per isolated frame. See OSI-021 "temporal blur persistence".
 
  4. TARGETED GDPR BLUR ("look harder inside the box, blur when uncertain")
  - VEHICLE boxes (car/truck/motorcycle/bus/van): run a second,
@@ -165,6 +170,12 @@ ready to upload. Each stage feeds the next; nothing skips.
  head region (upper portion of the box) anyway.
  • A person seen from behind has no face to blur — that is fine.
  • Over-blurring costs nothing; under-blurring is the violation.
+ - TEMPORAL PERSISTENCE (NO BLINKING — see OSI-021, hard requirement):
+ once a plate/face is blurred on a tracked object in ANY frame, it
+ stays blurred for the ENTIRE track — through every frame the object
+ is on screen, including frames where the detector missed it, and
+ with padding before the first and after the last detection. The
+ same car's plate is never readable for even one frame.
  - This stage is OSI-016 GDPR hardening, implementing what
  REAR-WINDOW-NEXT-TASKS.md priority 1 specifies. It REPLACES
  osi007_final.py's current single-pass blur-and-box.
@@ -202,7 +213,7 @@ ready to upload. Each stage feeds the next; nothing skips.
  blurred." Today's first run keeps the gate closed and the
  per-segment + concat outputs sit locally for manual review.
 
-PHILOSOPHY OF THE ORDER
+ PHILOSOPHY OF THE ORDER
 - Identify (YOLO) BEFORE you redact (blur). Knowing what you're
  redacting makes the redaction better, and the YOLO boxes carry
  forward into the annotation overlay so the work isn't redundant.
@@ -232,6 +243,11 @@ PHILOSOPHY OF THE ORDER
  on the concat first.
  Full dashboard visual spec: OSI-007-DASHBOARD-SPEC.md (4 layers) +
  APPENDIX A (ISO 8608 coefficient-C method behind the class line).
+ KNOWN ISSUE (2026-06-19, from Vasil's review of an earlier output):
+ license-plate blur BLINKS — a plate is blurred in some frames and
+ readable in others on the SAME car. This is a GDPR leak and is fixed
+ by the temporal-persistence requirement added to OSI-021 below. Do
+ NOT consider OSI-007 publish-ready until plate/face blur is blink-free.
 
 **OSI-016 | WayTrace SYNC clapper — first field run completed, working**
  Status: 2026-06-18 push used the OSI-016 SYNC clapper in the field
@@ -255,9 +271,61 @@ PHILOSOPHY OF THE ORDER
 
 **OSI-021 | Refactor osi007_final into the new per-push pipeline order**
  Source: the PER-PUSH PIPELINE section, locked 2026-06-19.
- Status: TODO. Becomes IN PROGRESS once the current batch is reviewed
- and Vasil greenlights the refactor.
+ Status (2026-06-20): **CODE COMPLETE, batch redeploying.** Vasil
+ greenlit the refactor (out of order vs. the original "after batch
+ review" plan) once he saw the blinking GDPR leak in the 2026-06-19
+ osi007_final.py output. The 2026-06-19 push batch was stopped mid-
+ first-MOV so the new pipeline could replace osi007_final.py before
+ anything else gets blurred-with-blinks. Implementation summary:
 
+   tools/osi007_detect.py (NEW, 169 lines):
+     - Ultralytics YOLO obj.track() with the default BotSort tracker
+       for stable per-object IDs across frames.
+     - For each tracked vehicle (car/truck/bus/motorcycle): crops the
+       bbox and runs the plate detector inside it at LOWER conf 0.10
+       (vs. the old full-frame 0.15); skips the dashcam-timestamp
+       upper-left zone (heuristic kept from osi007_final.py).
+     - For each tracked person: crops and runs the face detector at
+       conf 0.20 (vs. 0.30).
+     - Emits a per-track JSON sidecar: track_id → cls, frames[],
+       bboxes[], confs[], plates[], faces[] (parallel arrays).
+
+   tools/osi007_blur.py (NEW, 280 lines):
+     - Reads the detect JSON + the 1080p MP4 source.
+     - For each track:
+        * If any plate detection exists on the track: expresses each
+          detection as a position RELATIVE to the vehicle bbox at
+          detection time (rx1, ry1, rx2, ry2 in [0,1]), linearly
+          interpolates the relative box between consecutive
+          detections, projects onto the CURRENT vehicle bbox at each
+          frame — so the blur scales with the car driving away and
+          tracks it sideways. Pads ±round(0.5 × fps) frames around
+          first/last detection.
+        * If a vehicle is tracked but a plate is NEVER detected:
+          SAFETY BACKSTOP — blurs the lower 60–100 % of the vehicle
+          bbox, inset 10 % from each side, for the WHOLE track.
+        * Same logic for faces on person tracks. Backstop = upper
+          25 % of person bbox, inset 15 % each side (head region).
+     - Then composites the SRS colored YOLO boxes on top (RED vehicles,
+       GREEN cyclists/persons, BLUE small obstacles) — taking the
+       per-frame bbox from the detect sidecar so the boxes don't
+       duplicate detection work.
+     - Mux audio from source. Write counts JSON sidecar with track-
+       level breakdowns (plates_with_real_detection vs.
+       plates_backstop_only, etc.) for review.
+
+   tools/vtx1_phase2_batch.sh:
+     - Step 2 split into [2/4] detect + [3/4] blur; step 4 is now [4/4]
+       dashboard; gated YouTube upload renumbered [5/5].
+     - PRE-FLIGHT check extended to include ultralytics.
+
+ ACCEPTANCE (per Vasil's "removed, absolutely"): on the 2026-06-20 batch
+ output, frame-by-frame review must show ZERO frames anywhere with a
+ readable plate or identifiable forward-facing face on any tracked
+ object — including during detector dropouts. Only after this passes
+ may UPLOAD_TO_YOUTUBE=1 be flipped.
+
+ Original problem statement, kept for context:
  Today's osi007_final.py does plate/face/object detection in one pass
  and writes the consolidated output directly. The new order separates
  these into independent stages so step 4's GDPR blur can be priored
@@ -265,16 +333,54 @@ PHILOSOPHY OF THE ORDER
  vehicle/person box), and so the boxes feed forward into the
  annotation overlay without redundant detection.
 
+ *** HARD REQUIREMENT — TEMPORAL BLUR PERSISTENCE (NO BLINKING) ***
+ (Added 2026-06-19 from Vasil's review. This is GDPR-critical and
+ non-negotiable; the YouTube gate stays OFF until it passes.)
+ PROBLEM observed in current output: the plate blur is computed
+ PER FRAME independently. When the plate detector misses for a frame
+ or two, the blur drops and the plate becomes readable, then blurs
+ again — it BLINKS. Even a single readable frame is a privacy leak;
+ the number got out.
+ REQUIRED behaviour: blur is bound to the TRACKED OBJECT, not the
+ frame. Concretely:
+ - Use the stable per-object track IDs from step 3 (YOLO tracking).
+ - For each tracked vehicle, maintain a plate-region estimate. Once a
+ plate is detected anywhere on that track, BLUR THAT REGION IN EVERY
+ FRAME of the track — including frames where detection failed, by
+ carrying the last known plate box and/or interpolating between
+ detections, and tracking the region with the car's motion.
+ - PAD the blur in time: start blurring N frames BEFORE the first
+ detection and continue N frames AFTER the last (e.g. N ≈ 0.5 s
+ worth of frames), so onset/loss of detection is never visible.
+ - If a vehicle is tracked but a plate is NEVER detected, fall back to
+ the SAFETY BACKSTOP (blur the plate-likely lower zone of the box)
+ for the whole track.
+ - Same temporal persistence applies to FACES on person tracks: once
+ blurred on a track, stay blurred across the track (a person turning
+ away briefly must not flash their face); forward-facing-with-no-
+ detection still gets the head-region backstop.
+ - Net rule, in Vasil's words: the same car / same yellow mark keeps
+ its plate blurred before, during, and after — the numbers are
+ removed absolutely and never shown.
+ ACCEPTANCE (temporal persistence): frame-by-frame review of the
+ 2026-06-18 push output shows ZERO frames anywhere with a readable
+ plate or an identifiable forward-facing face on any tracked object —
+ including during detector dropouts. No blinking. Only then may
+ UPLOAD_TO_YOUTUBE be set.
+
  Touches: app/src/main/res/raw/* (no change), osi007_final.py (split
  into osi007_detect.py + osi007_blur.py, both producing sidecars the
- dashboard step consumes), tools/vtx1_phase2_batch.sh (re-wire to call
- the two new stages in order), tools/osi007_dashboard.py (no change —
- already takes the post-blur MP4).
+ dashboard step consumes; osi007_detect.py now also emits per-object
+ track IDs; osi007_blur.py consumes tracks for temporal persistence),
+ tools/vtx1_phase2_batch.sh (re-wire to call the two new stages in
+ order), tools/osi007_dashboard.py (no change — already takes the
+ post-blur MP4).
 
  Acceptance: same visual quality of boxes and blurs as today, plus
  ZERO unblurred plates and ZERO unblurred forward-facing faces on
- spot-checks of the 2026-06-18 push output. Then the YouTube upload
- gate (UPLOAD_TO_YOUTUBE=1) can be flipped.
+ spot-checks of the 2026-06-18 push output (per the temporal-
+ persistence acceptance above). Then the YouTube upload gate
+ (UPLOAD_TO_YOUTUBE=1) can be flipped.
 
 **OSI-011 | Stationary suppression**
  Min 1 row/sec stationary. Full 120 Hz motion.
@@ -348,3 +454,33 @@ Vasil folds it in formally.)
  vertical-axis correction and honesty guards). OSI-017 retired as a
  duplicate. REAR-WINDOW P3 (vibration border) noted as absorbed into the
  dashboard footer. No content deleted anywhere.
+2026-06-19 (later) — OSI-021 HARD REQUIREMENT added: temporal blur
+ persistence (NO BLINKING). Vasil reviewed output and saw plate blur
+ flickering on/off on the same car (readable in some frames). Fix:
+ blur bound to YOLO track ID across the whole track — before, during,
+ and after detections, with time padding and interpolation through
+ detector dropouts; faces same way; safety backstop for never-detected
+ plates/faces. Tracking added to pipeline step 3. ZERO readable-plate
+ frames is the acceptance bar before UPLOAD_TO_YOUTUBE may be enabled.
+ "Removed, absolutely" — Vasil.
+2026-06-20 (morning) — 2026-06-19 push batch ("ISO 8608 Class E Push",
+ 6.20 km, 7 MOVs) launched at 09:17, stopped at ~10:30 mid-first-MOV
+ after Vasil flagged the blinking GDPR leak in the existing osi007_final
+ output. SD card mounted on VT-X1, 22 GB of new MOVs copied (yesterday's
+ sources archived to ~/Videos/VIDEO_prev_20260620), per-MOV offsets
+ derived from chime detection: session 1 bookend drift -0.62 s, session
+ 2 bookend drift -1.69 s (both healthy). New ART files + GPX uploaded
+ to ~/waytrace-video/art/. Yesterday's 2026-06-18 dashboard outputs
+ archived to ~/Videos/VIDEO_dashboard_20260618/ (concat
+ RW-PUSH-202606181630-final.mp4, 9.8 GB, 99 m 28 s) for review while
+ the new pipeline is built.
+2026-06-20 (later) — OSI-021 IMPLEMENTED. osi007_detect.py +
+ osi007_blur.py written. The detect script tracks objects with
+ Ultralytics BotSort and runs focused plate/face detection inside each
+ vehicle/person crop; the blur script computes per-track temporal-
+ persistent blur regions via relative-bbox interpolation + ±0.5 s
+ padding + safety backstop. Batch script re-wired to call the two new
+ stages in order. Pipeline is now ready for the 2026-06-19 push re-run
+ with no-blinking blur. Acceptance review (frame-by-frame, ZERO
+ readable plates / forward-facing faces) is gated before
+ UPLOAD_TO_YOUTUBE can be flipped.

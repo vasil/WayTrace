@@ -1,16 +1,23 @@
 #!/bin/bash
-# OSI-007 Phase-2 batch: 4K -> 1080p downscale + osi007_final.py
-# (face/plate blur + YOLO boxes) + osi007_dashboard.py (HUD overlays).
+# OSI-007 Phase-2 batch: 4K -> 1080p downscale + osi007_detect.py
+# (YOLO tracking + plate/face detection inside boxes) + osi007_blur.py
+# (TEMPORAL-PERSISTENT blur + colored YOLO boxes) +
+# osi007_dashboard.py (HUD overlays).
+#
+# OSI-021 revision (2026-06-20): step 2 is split into detect + blur per
+# the SRS HARD REQUIREMENT "temporal blur persistence (no blinking)".
+# Plates and faces are now blurred for the ENTIRE lifespan of each
+# tracked object, interpolating through detector dropouts and padding
+# before/after the detection window — the per-frame independent blur
+# of osi007_final.py is what caused the GDPR-leaking blink.
 #
 # Hardened revision (after the 2026-06-18 pandas-missing wipeout):
 #   - PRE-FLIGHT import check up front: fail loud if any dependency
-#     (cv2/numpy/pandas/scipy) is missing — no point burning 11 h on
-#     a pipeline that crashes silently in step 3.
-#   - Step 2 and step 3 each check exit status; if either fails the
-#     intermediates are KEPT (no cleanup) and we abort the loop for
-#     that MOV — easier to recover than to re-run downscale + osi007.
-#   - Step 3 (dashboard) cleanup only happens if the final file is
-#     present and non-empty.
+#     (cv2/numpy/pandas/scipy/ultralytics) is missing — no point burning
+#     11 h on a pipeline that crashes silently late.
+#   - Each step checks exit status; if any fails the intermediates are
+#     KEPT (no cleanup) and we abort the loop for that MOV.
+#   - Final cleanup only happens if the final file is present + non-empty.
 
 set -uo pipefail
 
@@ -19,9 +26,9 @@ conda activate osi007
 
 # ── PRE-FLIGHT ───────────────────────────────────────────────────────────
 # Crash early if dependencies are missing, not 11 h in.
-if ! python -c "import cv2, numpy, pandas, scipy" 2>/dev/null; then
-    echo "[$(date +%H:%M:%S)] PRE-FLIGHT FAILED: missing one of cv2/numpy/pandas/scipy"
-    python -c "import cv2, numpy, pandas, scipy"   # print the actual error
+if ! python -c "import cv2, numpy, pandas, scipy, ultralytics" 2>/dev/null; then
+    echo "[$(date +%H:%M:%S)] PRE-FLIGHT FAILED: missing cv2/numpy/pandas/scipy/ultralytics"
+    python -c "import cv2, numpy, pandas, scipy, ultralytics"   # print the actual error
     exit 1
 fi
 echo "[$(date +%H:%M:%S)] pre-flight imports OK"
@@ -48,23 +55,25 @@ log "=== PHASE-2 BATCH START (hardened revision) ==="
 log "input dir : $IN_DIR"
 log "output dir: $OUT_DIR"
 
-TITLE="Rear Window Push"
-GPX="$GPX_DIR/GPS-202606181630.gpx"
+TITLE="ISO 8608 Class E Push"
+GPX="$GPX_DIR/GPS-202606191651.gpx"
 
+# 2026-06-19 push: 2 sessions, 7 camera-split MOVs (3 + 4).
+# Offsets derived from sync_chime_detect.py against ART sync_pulse rows.
+# Bookend drift was -0.62 s on session 1 and -1.69 s on session 2.
 declare -A ART
 declare -A OFFSET
-ART[20240101_201141]=ART-202606181630.csv; OFFSET[20240101_201141]=-6.9
-ART[20240101_202540]=ART-202606181630.csv; OFFSET[20240101_202540]=831.1
-ART[20240101_203939]=ART-202606181630.csv; OFFSET[20240101_203939]=1669.1
-ART[20240101_205338]=ART-202606181630.csv; OFFSET[20240101_205338]=2507.1
-ART[20240101_214851]=ART-202606181807.csv; OFFSET[20240101_214851]=-7.9
-ART[20240101_220250]=ART-202606181807.csv; OFFSET[20240101_220250]=830.1
-ART[20240101_221649]=ART-202606181807.csv; OFFSET[20240101_221649]=1668.1
-ART[20240101_223047]=ART-202606181807.csv; OFFSET[20240101_223047]=2506.1
+ART[20240101_200028]=ART-202606191651.csv; OFFSET[20240101_200028]=-14.7
+ART[20240101_201427]=ART-202606191651.csv; OFFSET[20240101_201427]=824.0
+ART[20240101_202826]=ART-202606191651.csv; OFFSET[20240101_202826]=1662.6
+ART[20240101_213448]=ART-202606191824.csv; OFFSET[20240101_213448]=17.9
+ART[20240101_214847]=ART-202606191824.csv; OFFSET[20240101_214847]=856.5
+ART[20240101_220246]=ART-202606191824.csv; OFFSET[20240101_220246]=1695.0
+ART[20240101_221644]=ART-202606191824.csv; OFFSET[20240101_221644]=2533.6
 
 BASES=(
-    20240101_201141 20240101_202540 20240101_203939 20240101_205338
-    20240101_214851 20240101_220250 20240101_221649 20240101_223047
+    20240101_200028 20240101_201427 20240101_202826
+    20240101_213448 20240101_214847 20240101_220246 20240101_221644
 )
 log "queued ${#BASES[@]} MOVs"
 
@@ -82,14 +91,15 @@ for base in "${BASES[@]}"; do
     fi
 
     DS="$TMP_DIR/${base}_1080p.mp4"
-    OSI="$TMP_DIR/${base}_consolidated.mp4"
+    DETECT_JSON="$TMP_DIR/${base}_detect.json"
+    BLURRED="$TMP_DIR/${base}_consolidated.mp4"
 
     log "--- $base ---"
     log "  ART=$art_name  offset=${offset}s"
     t_a=$(date +%s)
 
     # 1) Downscale 4K -> 1080p (NVENC).
-    log "[1/3] downscale 4K -> 1080p (h264_nvenc, 8 Mbps)"
+    log "[1/4] downscale 4K -> 1080p (h264_nvenc, 8 Mbps)"
     if ! ffmpeg -y -hide_banner -loglevel error \
         -hwaccel cuda -i "$SRC" \
         -vf "scale=1920:1080:flags=lanczos" \
@@ -100,20 +110,30 @@ for base in "${BASES[@]}"; do
     t_b=$(date +%s)
     log "    downscale: $((t_b - t_a))s, $(du -h "$DS" | cut -f1)"
 
-    # 2) osi007_final.py.
-    log "[2/3] osi007_final.py"
-    if ! python -u "$ROOT/osi007_final.py" "$DS" "$OSI" \
-            > "$TMP_DIR/${base}_osi.log" 2>&1; then
-        log "    OSI007 FAILED — keeping intermediates, skipping $base"
-        log "    see $TMP_DIR/${base}_osi.log"; continue
+    # 2) osi007_detect.py — YOLO tracking + plate/face inside crops.
+    log "[2/4] osi007_detect.py (YOLO + tracking + plate/face)"
+    if ! python -u "$ROOT/osi007_detect.py" "$DS" "$DETECT_JSON" \
+            > "$TMP_DIR/${base}_detect.log" 2>&1; then
+        log "    DETECT FAILED — keeping intermediates, skipping $base"
+        log "    see $TMP_DIR/${base}_detect.log"; continue
     fi
     t_c=$(date +%s)
-    log "    osi007:    $((t_c - t_b))s, $(du -h "$OSI" 2>/dev/null | cut -f1)"
+    log "    detect:    $((t_c - t_b))s, $(du -h "$DETECT_JSON" 2>/dev/null | cut -f1) JSON"
 
-    # 3) Dashboard HUD overlay.
-    log "[3/3] dashboard HUD overlay"
+    # 3) osi007_blur.py — temporal-persistent blur from track sidecar.
+    log "[3/4] osi007_blur.py (temporal-persistent blur, NO BLINKING)"
+    if ! python -u "$ROOT/osi007_blur.py" "$DS" "$DETECT_JSON" "$BLURRED" \
+            > "$TMP_DIR/${base}_blur.log" 2>&1; then
+        log "    BLUR FAILED — keeping intermediates, skipping $base"
+        log "    see $TMP_DIR/${base}_blur.log"; continue
+    fi
+    t_d=$(date +%s)
+    log "    blur:      $((t_d - t_c))s, $(du -h "$BLURRED" 2>/dev/null | cut -f1)"
+
+    # 4) Dashboard HUD overlay.
+    log "[4/4] dashboard HUD overlay"
     if ! python -u "$ROOT/osi007_dashboard.py" \
-            --video "$OSI" \
+            --video "$BLURRED" \
             --art   "$ART_PATH" \
             --gpx   "$GPX" \
             --title "$TITLE" \
@@ -123,26 +143,26 @@ for base in "${BASES[@]}"; do
         log "    DASHBOARD FAILED — keeping intermediates so we can resume"
         log "    see $TMP_DIR/${base}_dash.log"; continue
     fi
-    t_d=$(date +%s)
+    t_e=$(date +%s)
     # Verify the final actually got written.
     if [ ! -f "$FINAL" ] || [ "$(stat -c%s "$FINAL")" -lt 1000000 ]; then
         log "    DASHBOARD produced no/empty output — keeping intermediates"; continue
     fi
-    log "    dashboard: $((t_d - t_c))s, $(du -h "$FINAL" | cut -f1)"
+    log "    dashboard: $((t_e - t_d))s, $(du -h "$FINAL" | cut -f1)"
 
-    # 4) Optional: upload to YouTube (unlisted).
-    # GATED OFF by default. Your SRS says "NO video goes to YouTube until
-    # ALL plates are confirmed blurred" and OSI-007 still has the known
-    # plate-miss gap; flip the gate explicitly when GDPR hardening lands:
+    # 5) Optional: upload to YouTube (unlisted).
+    # GATED OFF by default. Per SRS OSI-021 acceptance: stays OFF until
+    # a frame-by-frame review of the OSI-021 output shows ZERO unblurred
+    # plates and ZERO unblurred forward-facing faces. Flip explicitly:
     #     UPLOAD_TO_YOUTUBE=1 ~/waytrace-video/vtx1_phase2_batch.sh
     if [ "${UPLOAD_TO_YOUTUBE:-0}" = "1" ]; then
-        log "[4/4] upload to YouTube (privacy=unlisted)"
+        log "[5/5] upload to YouTube (privacy=unlisted)"
         json_counts="$TMP_DIR/${base}_consolidated.json"
         if ! python -u "$ROOT/youtube_upload.py" \
                 --video "$FINAL" \
-                --title "$TITLE — $(date -d @"$t_d" +%Y-%m-%d)" \
+                --title "$TITLE — $(date -d @"$t_e" +%Y-%m-%d)" \
                 --privacy unlisted \
-                --recorded "$(date -d @"$t_d" +%Y-%m-%d)" \
+                --recorded "$(date -d @"$t_e" +%Y-%m-%d)" \
                 ${json_counts:+--json-counts "$json_counts"} \
                 > "$TMP_DIR/${base}_yt.log" 2>&1; then
             log "    UPLOAD FAILED — see $TMP_DIR/${base}_yt.log"
@@ -153,8 +173,8 @@ for base in "${BASES[@]}"; do
     fi
 
     # Only now is it safe to clean.
-    rm -f "$DS" "$OSI"
-    log "[DONE $base] total $((t_d - t_a))s -> $FINAL"
+    rm -f "$DS" "$DETECT_JSON" "$BLURRED"
+    log "[DONE $base] total $((t_e - t_a))s -> $FINAL"
 done
 
 t_end=$(date +%s)
