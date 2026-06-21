@@ -55,25 +55,30 @@ log "=== PHASE-2 BATCH START (hardened revision) ==="
 log "input dir : $IN_DIR"
 log "output dir: $OUT_DIR"
 
-TITLE="ISO 8608 Class E Push"
-GPX="$GPX_DIR/GPS-202606191651.gpx"
+TITLE="Evening Push"
+GPX="$GPX_DIR/GPS-202606201835.gpx"
 
-# 2026-06-19 push: 2 sessions, 7 camera-split MOVs (3 + 4).
-# Offsets derived from sync_chime_detect.py against ART sync_pulse rows.
-# Bookend drift was -0.62 s on session 1 and -1.69 s on session 2.
+# 2026-06-20 evening push: 2 sessions, 6 camera-split MOVs (3 + 3).
+# Offsets from sync_chime_detect.py vs ART sync_pulse rows.
+# Bookend agreement: session 1 split 830.06 s, session 2 split 838.58 s.
+# Dashboard is still the v1 prototype here (RMS, green minimap, ISO 2631
+# threshold). The QA-1..QA-9 fixes from dashboard_preview.py will be
+# applied to osi007_dashboard.py and the dashboard step re-run on the
+# blurred MP4s once Vasil approves the previews. Tonight: capture the
+# correct GDPR blur on the new push so the heavy work doesn't have to
+# repeat.
 declare -A ART
 declare -A OFFSET
-ART[20240101_200028]=ART-202606191651.csv; OFFSET[20240101_200028]=-14.7
-ART[20240101_201427]=ART-202606191651.csv; OFFSET[20240101_201427]=824.0
-ART[20240101_202826]=ART-202606191651.csv; OFFSET[20240101_202826]=1662.6
-ART[20240101_213448]=ART-202606191824.csv; OFFSET[20240101_213448]=17.9
-ART[20240101_214847]=ART-202606191824.csv; OFFSET[20240101_214847]=856.5
-ART[20240101_220246]=ART-202606191824.csv; OFFSET[20240101_220246]=1695.0
-ART[20240101_221644]=ART-202606191824.csv; OFFSET[20240101_221644]=2533.6
+ART[20240101_200042]=ART-202606201835.csv; OFFSET[20240101_200042]=-0.3
+ART[20240101_201440]=ART-202606201835.csv; OFFSET[20240101_201440]=829.8
+ART[20240101_202840]=ART-202606201835.csv; OFFSET[20240101_202840]=1659.8
+ART[20240101_211014]=ART-202606201944.csv; OFFSET[20240101_211014]=16.0
+ART[20240101_212413]=ART-202606201944.csv; OFFSET[20240101_212413]=854.5
+ART[20240101_213812]=ART-202606201944.csv; OFFSET[20240101_213812]=1693.1
 
 BASES=(
-    20240101_200028 20240101_201427 20240101_202826
-    20240101_213448 20240101_214847 20240101_220246 20240101_221644
+    20240101_200042 20240101_201440 20240101_202840
+    20240101_211014 20240101_212413 20240101_213812
 )
 log "queued ${#BASES[@]} MOVs"
 
