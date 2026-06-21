@@ -32,23 +32,75 @@ import numpy as np
 import pandas as pd
 
 CANVAS_W, CANVAS_H = 1920, 1080
-TITLE_POS    = (70, 60)        # baseline of title
-SPEED_POS    = (70, 145)       # baseline of speed
+
+# ── QA-8 (2026-06-21): title + speed + ISO class all share LEFT_ANCHOR
+LEFT_ANCHOR    = 70
+TITLE_BASELINE = 60
+SPEED_BASELINE = 145
+
 MAP_X, MAP_Y, MAP_W, MAP_H = 1430, 30, 460, 300
-FOOTER_Y, FOOTER_H = 980, 100
+
+# QA-6: footer band stretched slightly
+FOOTER_Y, FOOTER_H = 970, 110
+FOOTER_PAD_TOP = 14
+FOOTER_PAD_BOT = 24
+
 GRAVITY = 9.81
 
 # ── BGR colours (cv2 native) ────────────────────────────────────────────
 YELLOW   = (51, 204, 255)
-CYAN     = (221, 204, 0)
 WHITE    = (255, 255, 255)
-GREEN    = (51, 170, 51)
-RED      = (51, 51, 255)
 BLACK    = (0, 0, 0)
-AMBER_BG = (0, 85, 107)
-GREEN_BG = (0, 51, 0)
-RED_BG   = (0, 0, 90)
-FOOTER_BORDER = (51, 0, 204)
+DARK_GRAY     = (90, 90, 90)        # QA-9: minimap border + ROUTE label
+MAGENTA       = (220, 0, 220)       # QA-2: threshold line
+TRACE_WHITE   = (245, 245, 245)
+ROUTE_YELLOW  = (51, 204, 255)
+DOT_RED       = (51, 51, 255)
+
+# Footer background tints by current VDV (dark, semi-transparent)
+GREEN_BG = (0, 60, 0)
+AMBER_BG = (0, 95, 120)
+RED_BG   = (0, 0, 95)
+FOOTER_BORDER = (90, 0, 160)
+
+# QA-7: speed colour cycles with ISO 8608 class A..F
+ISO_CLASS_COLOR = {
+    "A": (80, 220, 80),
+    "B": (140, 230, 80),
+    "C": (80, 230, 230),
+    "D": (40, 165, 255),
+    "E": (40, 90, 240),
+    "F": (40, 40, 220),
+}
+
+# Bright VDV-bucket colours for the minimap polyline (passed road)
+MAP_BRIGHT_GREEN  = (50, 220, 50)
+MAP_BRIGHT_AMBER  = (40, 175, 240)
+MAP_BRIGHT_RED    = (60, 60, 235)
+MAP_UNPASSED_GRAY = (130, 130, 130)
+
+# ── VDV (QA-1) thresholds ───────────────────────────────────────────────
+VDV_WINDOW_S    = 10.0
+VDV_THRESH      = 8.5      # m/s^1.75 — LOW-risk boundary
+VDV_PLOT_MAX    = 25.0
+VDV_GREEN_LIMIT = 2.0
+VDV_AMBER_LIMIT = 8.5
+
+# Interim VDV→ISO 8608 class buckets (Appendix A coefficient-C method
+# is in waytrace_analysis.py and will replace this when wired).
+def vdv_to_iso_class(v):
+    if v < 1.5:  return "A"
+    if v < 3.0:  return "B"
+    if v < 6.0:  return "C"
+    if v < 10.0: return "D"
+    if v < 17.0: return "E"
+    return "F"
+
+
+def vdv_to_map_color(v):
+    if v < VDV_GREEN_LIMIT: return MAP_BRIGHT_GREEN
+    if v < VDV_AMBER_LIMIT: return MAP_BRIGHT_AMBER
+    return MAP_BRIGHT_RED
 
 
 # ── GPX -------------------------------------------------------------------
@@ -121,6 +173,25 @@ def windowed_rms_series(acc, fs, window_s=10.0, hop_s=1.0):
     return np.array(ts), np.array(rms)
 
 
+def vdv_series(acc, fs, window_s=VDV_WINDOW_S, hop_s=1.0):
+    """Rolling VDV. VDV = (∫ a^4 dt)^(1/4). Approximate Wk by removing
+    gravity from |a|; the rigorous Wk filter lives in waytrace_analysis."""
+    a = (np.sqrt(acc["x"]**2 + acc["y"]**2 + acc["z"]**2)
+         - GRAVITY).to_numpy()
+    t = acc["t_s"].to_numpy()
+    dt = 1.0 / fs
+    win = int(window_s * fs); hop = int(hop_s * fs)
+    if win >= len(a):
+        v = float((np.sum(a**4) * dt) ** 0.25)
+        return np.array([t[len(t)//2]]), np.array([v])
+    ts, out = [], []
+    a4 = a**4
+    for i in range(0, len(a) - win, hop):
+        ts.append(t[i + win // 2])
+        out.append(float((np.sum(a4[i:i+win]) * dt) ** 0.25))
+    return np.array(ts), np.array(out)
+
+
 # ── Drawing helpers ------------------------------------------------------
 def text_outlined(img, text, org, scale, color, thickness=2,
                   outline=4, font=cv2.FONT_HERSHEY_DUPLEX):
@@ -130,45 +201,75 @@ def text_outlined(img, text, org, scale, color, thickness=2,
                 thickness, cv2.LINE_AA)
 
 
-def draw_title_and_speed(frame, title, speed_kmh):
-    text_outlined(frame, title, TITLE_POS, 1.1, YELLOW, thickness=2, outline=4)
-    text_outlined(frame, f"{speed_kmh:5.1f} km/h",
-                  SPEED_POS, 2.1, WHITE, thickness=4, outline=5)
+def draw_title_and_speed(frame, title, speed_kmh, iso_class):
+    """QA-7 speed colour by ISO class + QA-8 shared left anchor."""
+    text_outlined(frame, title, (LEFT_ANCHOR, TITLE_BASELINE),
+                  1.1, YELLOW, thickness=2, outline=4)
+    speed_color = ISO_CLASS_COLOR.get(iso_class, WHITE)
+    text_outlined(frame, f"{speed_kmh:.1f} km/h",
+                  (LEFT_ANCHOR, SPEED_BASELINE),
+                  2.1, speed_color, thickness=4, outline=5)
+    text_outlined(frame, f"ISO 8608 class {iso_class}",
+                  (LEFT_ANCHOR, SPEED_BASELINE + 36),
+                  0.65, speed_color, thickness=2, outline=3)
 
 
-def draw_map(frame, proj, route_pts, cur_lat, cur_lon):
-    # frame
+def draw_map(frame, proj, route_pts, cur_idx, gpx_vdv):
+    """QA-9 + Vasil's clarification 2026-06-21:
+       - dark gray border + label
+       - UNPASSED road = gray
+       - PASSED road = coloured by VDV at that point
+       - YOU dot rides the seam."""
     cv2.rectangle(frame, (MAP_X, MAP_Y),
-                  (MAP_X+MAP_W, MAP_Y+MAP_H), GREEN, 2)
+                  (MAP_X+MAP_W, MAP_Y+MAP_H), DARK_GRAY, 2)
     text_outlined(frame, "ROUTE",
-                  (MAP_X + MAP_W//2 - 38, MAP_Y + 22),
-                  0.7, GREEN, thickness=1, outline=3)
-    # polyline (offset into map block)
+                  (MAP_X + MAP_W//2 - 32, MAP_Y + 22),
+                  0.65, DARK_GRAY, thickness=1, outline=3)
     if len(route_pts) > 1:
-        pts = np.array([[p[0]+MAP_X, p[1]+MAP_Y] for p in route_pts],
-                       dtype=np.int32)
-        cv2.polylines(frame, [pts], False, BLACK,  7, cv2.LINE_AA)  # halo
-        cv2.polylines(frame, [pts], False, YELLOW, 4, cv2.LINE_AA)  # route
-    # dot
-    dx, dy = proj(cur_lat, cur_lon)
-    cv2.circle(frame, (dx+MAP_X, dy+MAP_Y), 9, WHITE, 2, cv2.LINE_AA)
-    cv2.circle(frame, (dx+MAP_X, dy+MAP_Y), 7, RED, -1, cv2.LINE_AA)
-    text_outlined(frame, "YOU",
-                  (dx+MAP_X+14, dy+MAP_Y+6),
-                  0.55, WHITE, thickness=1, outline=3)
+        pts_xy = [(p[0]+MAP_X, p[1]+MAP_Y) for p in route_pts]
+        future = pts_xy[cur_idx:]
+        if len(future) > 1:
+            fa = np.array(future, dtype=np.int32)
+            cv2.polylines(frame, [fa], False, BLACK, 6, cv2.LINE_AA)
+            cv2.polylines(frame, [fa], False, MAP_UNPASSED_GRAY,
+                          3, cv2.LINE_AA)
+        if cur_idx > 1:
+            past = pts_xy[:cur_idx+1]
+            pa = np.array(past, dtype=np.int32)
+            cv2.polylines(frame, [pa], False, BLACK, 6, cv2.LINE_AA)
+            for i in range(len(past) - 1):
+                c = vdv_to_map_color(gpx_vdv[i])
+                cv2.line(frame, past[i], past[i+1], c, 3, cv2.LINE_AA)
+    if 0 <= cur_idx < len(route_pts):
+        dx, dy = route_pts[cur_idx]
+        cv2.circle(frame, (dx+MAP_X, dy+MAP_Y), 9, WHITE, 2, cv2.LINE_AA)
+        cv2.circle(frame, (dx+MAP_X, dy+MAP_Y), 7, DOT_RED, -1, cv2.LINE_AA)
+        text_outlined(frame, "YOU",
+                      (dx+MAP_X+14, dy+MAP_Y+6),
+                      0.55, WHITE, thickness=1, outline=3)
 
 
-def rms_to_y(v):
-    # axis: 0 at bottom of footer, 5 m/s² at the top — clip above
-    v_clip = max(0.0, min(5.0, v))
-    return int(FOOTER_Y + FOOTER_H - (v_clip / 5.0) * (FOOTER_H - 30))
+def vdv_to_y(v):
+    v_clip = max(0.0, min(VDV_PLOT_MAX, v))
+    avail = FOOTER_H - FOOTER_PAD_TOP - FOOTER_PAD_BOT
+    return int(FOOTER_Y + FOOTER_H - FOOTER_PAD_BOT
+               - (v_clip / VDV_PLOT_MAX) * avail)
 
 
-def draw_footer(frame, t_now, t_rms, rms, cur_rms):
-    # Background by current roughness — semi-transparent fill
-    if cur_rms < 1.0:
+def draw_dashed_hline(frame, x0, x1, y, color, dash=22, gap=14, thickness=2):
+    x = x0
+    while x < x1:
+        x2 = min(x + dash, x1)
+        cv2.line(frame, (x, y), (x2, y), color, thickness, cv2.LINE_AA)
+        x = x2 + gap
+
+
+def draw_footer(frame, t_now, t_vdv, vdv, cur_vdv):
+    """QA-1..6: VDV trace (not RMS), dashed magenta threshold, ASCII
+    units, larger fonts, full-band layout."""
+    if cur_vdv < VDV_GREEN_LIMIT:
         bg = GREEN_BG
-    elif cur_rms < 5.0:
+    elif cur_vdv < VDV_AMBER_LIMIT:
         bg = AMBER_BG
     else:
         bg = RED_BG
@@ -179,37 +280,43 @@ def draw_footer(frame, t_now, t_rms, rms, cur_rms):
     cv2.rectangle(frame, (0, FOOTER_Y),
                   (CANVAS_W, FOOTER_Y+FOOTER_H), FOOTER_BORDER, 1)
 
-    # Threshold line — ISO 2631-1 RMS_uncomfortable = 1.15 m/s²
-    thresh_y = rms_to_y(1.15)
-    cv2.line(frame, (0, thresh_y), (CANVAS_W, thresh_y), WHITE, 1, cv2.LINE_AA)
+    # QA-2: dashed magenta threshold line
+    thresh_y = vdv_to_y(VDV_THRESH)
+    draw_dashed_hline(frame, 0, CANVAS_W, thresh_y, MAGENTA,
+                      dash=22, gap=14, thickness=2)
+    # QA-3,4: ASCII VDV threshold label
     text_outlined(frame,
-                  "ISO 2631-1 uncomfortable threshold (1.15 m/s²)",
-                  (15, thresh_y - 8), 0.42, WHITE, thickness=1, outline=2)
+                  f"VDV LOW-risk = {VDV_THRESH:.1f} m/s^1.75",
+                  (18, thresh_y - 9), 0.62, MAGENTA,
+                  thickness=2, outline=3)
 
-    # 30-min rolling window: -30m to now
+    # 30-min rolling window — VDV trace
     window_start = t_now - 30 * 60
-    mask = (t_rms >= window_start) & (t_rms <= t_now)
+    mask = (t_vdv >= window_start) & (t_vdv <= t_now)
     if mask.sum() > 1:
-        ts_w = t_rms[mask]
-        rms_w = rms[mask]
+        ts_w = t_vdv[mask]; vdv_w = vdv[mask]
         xs = ((ts_w - window_start) / (30 * 60) * CANVAS_W).astype(np.int32)
-        ys = np.array([rms_to_y(v) for v in rms_w], dtype=np.int32)
+        ys = np.array([vdv_to_y(v) for v in vdv_w], dtype=np.int32)
         pts = np.stack([xs, ys], axis=1)
         if len(pts) > 1:
-            cv2.polylines(frame, [pts], False, WHITE, 2, cv2.LINE_AA)
+            cv2.polylines(frame, [pts], False, TRACE_WHITE, 2, cv2.LINE_AA)
 
-    # Tick labels
+    # QA-5: larger tick labels
     for i, m in enumerate([30, 25, 20, 15, 10, 5, 0]):
         x = int(30 + (CANVAS_W - 60) * i / 6)
         label = "now" if m == 0 else f"-{m}m"
         text_outlined(frame, label,
-                      (x - 18, FOOTER_Y + FOOTER_H - 8),
-                      0.40, (220, 220, 220), thickness=1, outline=2)
+                      (x - 22, FOOTER_Y + FOOTER_H - 5),
+                      0.55, (230, 230, 230), thickness=1, outline=2)
 
-    # Metric label
-    text_outlined(frame, "metric: windowed RMS (default)",
-                  (CANVAS_W - 360, FOOTER_Y + 22),
-                  0.45, (220, 220, 220), thickness=1, outline=2)
+    # Metric label + current readout
+    text_outlined(frame, "VDV (ISO 2631-1, Wk)",
+                  (CANVAS_W - 440, FOOTER_Y + 28),
+                  0.72, (250, 250, 250), thickness=2, outline=3)
+    text_outlined(frame,
+                  f"now: {cur_vdv:4.1f} m/s^1.75",
+                  (CANVAS_W - 440, FOOTER_Y + 60),
+                  0.62, (250, 250, 250), thickness=1, outline=3)
 
 
 # ── Main ----------------------------------------------------------------
@@ -224,12 +331,14 @@ def main():
     ap.add_argument("--out",   required=True, type=Path)
     args = ap.parse_args()
 
-    # Load ART & RMS series
+    # Load ART & VDV series (QA-1: VDV, not RMS)
     acc = load_art(args.art)
     fs = 1.0 / float(np.median(np.diff(acc["timestamp_ms"].to_numpy()))) * 1000.0
     print(f"ART: {len(acc):,} accel rows, fs ≈ {fs:.1f} Hz")
-    t_rms, rms = windowed_rms_series(acc, fs)
-    print(f"RMS series: {len(t_rms):,} samples")
+    t_vdv, vdv = vdv_series(acc, fs)
+    print(f"VDV series: {len(t_vdv):,} samples  "
+          f"min={vdv.min():.2f} max={vdv.max():.2f} "
+          f"median={np.median(vdv):.2f}")
 
     # GPX, speeds, projection
     gpx = parse_gpx(args.gpx)
@@ -238,8 +347,22 @@ def main():
     speeds = gpx_speeds_kmh(gpx)
     proj = project_gpx_to_box(gpx, MAP_W, MAP_H)
     route_pts = [proj(la, lo) for _, la, lo in gpx]
-    # GPX time relative to its first point (matches the ART t=0 frame).
+    # GPX time relative to its first point.
     gpx_t = gpx[:, 0] - gpx[0, 0]
+
+    # Per-GPX-point VDV by fractional progress through the push (so the
+    # minimap can colour each passed segment by the VDV at that point).
+    # ART and GPX may have different start times; fractional progress is
+    # the cleanest mapping without depending on an absolute sync.
+    gpx_n = len(gpx)
+    if len(vdv) > 0:
+        gpx_vdv = np.array([
+            float(vdv[min(len(vdv)-1,
+                          int(i / max(1, gpx_n-1) * (len(vdv)-1)))])
+            for i in range(gpx_n)
+        ])
+    else:
+        gpx_vdv = np.zeros(gpx_n)
 
     # Open video
     cap = cv2.VideoCapture(str(args.video))
@@ -272,19 +395,21 @@ def main():
         # Speed via interpolation on GPX
         if 0 <= t_art <= gpx_t[-1]:
             speed = float(np.interp(t_art, gpx_t, speeds))
-            cur_lat = float(np.interp(t_art, gpx_t, gpx[:, 1]))
-            cur_lon = float(np.interp(t_art, gpx_t, gpx[:, 2]))
+            # current GPX index (for the minimap passed/unpassed split)
+            cur_idx = int(np.searchsorted(gpx_t, t_art))
+            cur_idx = max(0, min(gpx_n - 1, cur_idx))
         else:
             speed = 0.0
-            cur_lat = gpx[0, 1]; cur_lon = gpx[0, 2]
+            cur_idx = 0 if t_art < 0 else gpx_n - 1
 
-        # Current windowed RMS
-        cur_rms = float(np.interp(t_art, t_rms, rms))
+        # Current windowed VDV (QA-1) + derived ISO class (QA-7)
+        cur_vdv = float(np.interp(t_art, t_vdv, vdv)) if len(t_vdv) else 0.0
+        iso_class = vdv_to_iso_class(cur_vdv)
 
         # ── Draw layers ─────────────────────────────────────────────────
-        draw_title_and_speed(frame, args.title, speed)
-        draw_map(frame, proj, route_pts, cur_lat, cur_lon)
-        draw_footer(frame, t_art, t_rms, rms, cur_rms)
+        draw_title_and_speed(frame, args.title, speed, iso_class)
+        draw_map(frame, proj, route_pts, cur_idx, gpx_vdv)
+        draw_footer(frame, t_art, t_vdv, vdv, cur_vdv)
 
         writer.write(frame)
         frame_i += 1
