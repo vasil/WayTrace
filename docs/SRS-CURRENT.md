@@ -19,6 +19,68 @@ NEVER create a new SRS file — always update this one.
 
 ---
 
+## *** PIPELINE CORRECTION — MERGE FIRST, SYNC ONCE (2026-06-21) ***
+## This OVERRIDES the step order below where they conflict. Read this first.
+
+PROBLEM observed (Vasil, 2026-06-21, reviewing yesterday's output):
+the pipeline processed each camera-split MOV as if it were its own push.
+The THIRD video started at the coffee break, the footer graph RESTARTED
+from zero there, and the minimap dot jumped back to home (the push start)
+instead of showing the true position. Each segment was synced and
+positioned independently — WRONG. A push is ONE continuous thing.
+
+CORRECTED ORDER — assemble the whole push BEFORE processing:
+
+ A. MERGE VIDEO FIRST. Concatenate all camera-split MOVs of the push into
+    ONE video, in recording order. Only the FIRST segment carries the
+    OSI-016 "Push Off" clapper. The merged video is one continuous
+    timeline.
+
+ B. MERGE ART FIRST. From 2026-06-21 onward Vasil does NOT stop WayTrace
+    mid-push — he uses PAUSE / RESUME. So there is normally ONE ART file
+    per push already, containing a large GAP of rows in the middle where
+    he paused for the break (he was not moving, so missing motion rows
+    there are CORRECT and expected). If more than one ART file exists for
+    a push, merge them into one continuous ART-MERGED-*.csv on the real
+    timestamp timeline. Do NOT collapse or delete the pause gap — it is
+    real (stationary) and must stay.
+
+ C. ONE GPX FOR THE PUSH. The single Strava activity GPX spans the whole
+    push. During the break the GPX sits in ONE place (he wasn't moving) —
+    that is correct. The minimap dot starts at the TRUE GPS START of the
+    Strava activity and moves continuously along the route for the whole
+    push; it never resets per segment.
+
+ D. FIND THE CLAPPER OFFSET ONCE, on the merged whole. The single
+    chime near the start of the merged video anchors the entire push.
+    video_to_art_offset is computed once and applies across the whole
+    merged timeline (not per MOV).
+
+ E. THEN PROCESS THE WHOLE PUSH as one continuous timeline: YOLO +
+    GDPR blur + dashboard run over the merged video against the merged
+    ART and the one GPX. Result: the footer VDV graph is ONE continuous
+    line from push start to push end (flat/again-continuous across the
+    pause gap, not restarted), and the dot is always at the correct
+    real-world position.
+
+NET RULE: one push = one merged video + one (merged) ART + one GPX,
+synced ONCE on the clapper, processed as a single continuous timeline.
+The old "CONCAT-PER-PUSH" at step 6 is therefore effectively done at
+the START now (step A), not the end. Per-segment independent sync/
+positioning is retired.
+
+NEXT RUN PLAN (Vasil, 2026-06-21): when home, Vasil hands over a NEW data
+set — new videos, ONE new ART file (pause/resume, with a mid gap), and the
+ONE new Strava GPX. SYNC FIRST (steps A–D), confirm it, THEN start
+processing (~22:00), expected done by ~11:00 next morning.
+
+IMPLEMENTATION (2026-06-21, this session): see tools/merge_push_inputs.sh
+(MOV concat + ART merge) and tools/vtx1_push_batch.sh (the push-level
+batch script). The old tools/vtx1_phase2_batch.sh is retained for
+reference but should not be used for new pushes.
+
+---
+
 ## FILE NAMING CONVENTION
 ART-YYYYMMDDHHMM.csv — sensor data
 ART-MERGED-YYYYMMDDHHMM.csv — merged multi-session sensor data
