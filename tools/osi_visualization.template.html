@@ -677,11 +677,11 @@ function clusterByLatlng(activities) {
     const lngs = c.indices.map(i => activities[i].s[1]).sort((a,b) => a-b);
     const q = (arr, p) => arr[Math.max(0, Math.min(arr.length - 1,
                                                    Math.floor((arr.length - 1) * p)))];
-    // Inner ~2% of start_latlngs — a single intersection's worth.
-    c.coreMinLat = q(lats, 0.49);
-    c.coreMaxLat = q(lats, 0.51);
-    c.coreMinLng = q(lngs, 0.49);
-    c.coreMaxLng = q(lngs, 0.51);
+    // Inner ~50% of start_latlngs — comfortable city-level frame.
+    c.coreMinLat = q(lats, 0.25);
+    c.coreMaxLat = q(lats, 0.75);
+    c.coreMinLng = q(lngs, 0.25);
+    c.coreMaxLng = q(lngs, 0.75);
     c.medLat = q(lats, 0.5);
     c.medLng = q(lngs, 0.5);
     // Date range — when Vasil was first / last pushing in this place.
@@ -1165,22 +1165,27 @@ async function main() {
   const placeLargeEl = document.getElementById('hudPlaceLarge');
   placeLargeEl.style.display = 'block';
 
-  // Compute target view for a stop. Activity stops lock to the CLUSTER'S
-  // view, not the push's own bbox — so the camera sits still while the
-  // tour cycles through 200 Skopje pushes in a row, and only re-aims
-  // when Vasil's actual town changes.
+  // Smooth midpoint of recent route centres. Each new push nudges the
+  // camera target a fraction of the way toward its own start — within
+  // a town the camera glides gently along the dense knot instead of
+  // jumping push-to-push.
+  let smoothX = 0, smoothY = 0;
+  const SMOOTH = 0.30;
+
+  // Cluster-level zoom (city / neighbourhood scale). Centre is the
+  // running smooth midpoint, not the cluster's median.
   function computeTargetView(stop) {
     const aspect = window.innerWidth / window.innerHeight;
     if (stop.kind === 'overview' || !stop.cluster) {
       return { x: 0, y: 0, scale: 1.0 };
     }
     const c = stop.cluster;
-    const w = Math.max(c.normMaxX - c.normMinX, 0.00008);
-    const h = Math.max(c.normMaxY - c.normMinY, 0.00008);
-    const sX = (2 * aspect * 0.025) / w;
-    const sY = (2 * 0.025) / h;
-    const s = Math.min(sX, sY, 30000);
-    return { x: -c.normX * s, y: -c.normY * s, scale: s };
+    const w = Math.max(c.normMaxX - c.normMinX, 0.005);
+    const h = Math.max(c.normMaxY - c.normMinY, 0.005);
+    const sX = (2 * aspect * 0.35) / w;
+    const sY = (2 * 0.35) / h;
+    const s = Math.min(sX, sY, 180);
+    return { x: -smoothX * s, y: -smoothY * s, scale: s };
   }
 
   // Tour state — 920 activity stops + 1 overview, ~1.4 s on each push.
@@ -1208,6 +1213,22 @@ async function main() {
   function showStop(idx, instant) {
     currentStop = (idx + tourStops.length) % tourStops.length;
     const stop = tourStops[currentStop];
+
+    // Update the smooth midpoint that the camera aims at.
+    // Manual jumps + cluster changes snap; consecutive same-cluster
+    // pushes glide via the EMA.
+    if (stop.kind === 'activity') {
+      const prevWasOverview = lastCity === 'All Places' || lastCity === null;
+      if (instant || prevWasOverview) {
+        smoothX = stop.normX;
+        smoothY = stop.normY;
+      } else {
+        smoothX = smoothX * (1 - SMOOTH) + stop.normX * SMOOTH;
+        smoothY = smoothY * (1 - SMOOTH) + stop.normY * SMOOTH;
+      }
+    } else {
+      smoothX = 0; smoothY = 0;
+    }
 
     // TOP CENTRE: title = the Strava activity name (or "All Places" on
     // overview). City crossfade only when we actually change towns —
@@ -1382,15 +1403,24 @@ async function main() {
       // Holding Space overrides drag-snooze and accelerates everything.
       const snoozed = nowMs < tourPauseUntil && !fastMode;
       if (!snoozed && nowMs >= nextAdvanceAt) {
-        showStop(currentStop + 1, false);
-        const dwell = fastMode ? 60
-                    : (tourStops[currentStop].kind === 'overview'
-                        ? OVERVIEW_DWELL_MS : DWELL_MS);
-        nextAdvanceAt = nowMs + dwell;
+        // While Space is held, burn through multiple stops per frame —
+        // fastMode advances ~6 pushes per frame at 60 fps (~360/s).
+        if (fastMode) {
+          for (let k = 0; k < 6; k++) showStop(currentStop + 1, false);
+          nextAdvanceAt = nowMs; // keep firing every frame
+        } else {
+          showStop(currentStop + 1, false);
+          const dwell = tourStops[currentStop].kind === 'overview'
+            ? OVERVIEW_DWELL_MS : DWELL_MS;
+          nextAdvanceAt = nowMs + dwell;
+        }
       }
       if (!snoozed) {
+        // Camera aims at the smooth midpoint of recent route centres.
+        // Within a town: glides; between towns: cluster scale changes,
+        // the smooth EMA snaps to the new cluster.
         const target = computeTargetView(tourStops[currentStop]);
-        const ease = fastMode ? 0.85 : EASE;
+        const ease = fastMode ? 1.0 : EASE;
         view.x     += (target.x     - view.x)     * ease;
         view.y     += (target.y     - view.y)     * ease;
         view.scale += (target.scale - view.scale) * ease;
