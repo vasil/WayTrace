@@ -1,0 +1,1424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Lumen Atlas — Five Thousand Kilometres</title>
+
+<!--
+  ────────────────────────────────────────────────────────────────
+  LUMEN ATLAS
+  An offline interactive monument to Vasil Taneski's outdoor
+  wheelchair pushes — 5,000+ km cartographed as breath.
+  Each path is a brushstroke of warm gold light. Streets pushed
+  many times glow brighter. The whole city pulses with a
+  synthetic IMU rhythm derived from segment curvature and a
+  per-activity phase.
+  Single-file. No build chain. Just open it.
+  ────────────────────────────────────────────────────────────────
+-->
+
+<!-- Cormorant Garamond Light + JetBrains Mono Light -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;1,300&family=JetBrains+Mono:wght@200;300;400&display=swap" rel="stylesheet">
+
+<style>
+  :root {
+    --ink-deep:    #060c16;
+    --ink-mid:     #0a1422;
+    --ink-rim:     #14253c;
+    --cream:       #f1e6cd;
+    --cream-dim:   #c8b994;
+    --gold:        #f7d586;
+    --gold-bright: #fff6d6;
+    --ghost-blue:  #82a7ce;
+    --vermilion:   #d76038;
+    --ash:         rgba(241, 230, 205, 0.07);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: var(--ink-deep);
+    color: var(--cream);
+    font-family: 'Cormorant Garamond', 'Iowan Old Style', Garamond, serif;
+    font-weight: 300;
+    cursor: grab;
+    user-select: none;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  body.is-dragging { cursor: grabbing; }
+
+  /* — Atmosphere: gentle vignette + parchment grain — */
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    background:
+      radial-gradient(ellipse at center,
+                      transparent 30%,
+                      rgba(0,0,0,0.55) 100%),
+      radial-gradient(ellipse at 30% 60%,
+                      rgba(247, 213, 134, 0.06) 0%,
+                      transparent 35%);
+    pointer-events: none;
+    z-index: 2;
+    mix-blend-mode: normal;
+  }
+  body::after {
+    content: '';
+    position: fixed; inset: 0;
+    background-image:
+      url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='280' height='280' viewBox='0 0 280 280'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' seed='3'/><feColorMatrix values='0 0 0 0 0.95  0 0 0 0 0.9  0 0 0 0 0.8  0 0 0 0.6 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)' opacity='0.5'/></svg>");
+    opacity: 0.045;
+    mix-blend-mode: overlay;
+    pointer-events: none;
+    z-index: 3;
+  }
+
+  #stage { position: fixed; inset: 0; z-index: 1; }
+
+  /* — HUD: dignified, monospace numbers, serifed labels — */
+  .hud {
+    position: fixed;
+    z-index: 4;
+    pointer-events: none;
+    color: var(--cream);
+    opacity: 0;
+    animation: hudIn 1.8s ease-out 0.6s forwards;
+  }
+  @keyframes hudIn { to { opacity: 1; } }
+
+  .hud--tl { top: 38px; left: 44px; }
+  .hud--tr { top: 38px; right: 44px; text-align: right; pointer-events: auto; }
+  .hud--bl { bottom: 38px; left: 44px; }
+  .hud--br { bottom: 38px; right: 44px; text-align: right; max-width: 380px; }
+
+  .hud .label {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-weight: 200;
+    font-size: 10.5px;
+    letter-spacing: 0.34em;
+    text-transform: uppercase;
+    color: var(--cream-dim);
+    margin-bottom: 8px;
+  }
+  .hud .display {
+    font-family: 'Cormorant Garamond', Garamond, serif;
+    font-weight: 300;
+    font-style: italic;
+    color: var(--cream);
+  }
+
+  .title-block {
+    line-height: 0.9;
+  }
+  .title-block .eyebrow {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 300;
+    font-size: 11px;
+    letter-spacing: 0.5em;
+    color: var(--cream-dim);
+    margin-bottom: 14px;
+  }
+  .title-block .title {
+    font-family: 'Cormorant Garamond', serif;
+    font-weight: 300;
+    font-style: italic;
+    font-size: 46px;
+    color: var(--gold-bright);
+    line-height: 1;
+    letter-spacing: -0.01em;
+    text-shadow: 0 0 22px rgba(247,213,134,0.18);
+  }
+  .title-block .subtitle {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 200;
+    font-size: 12px;
+    letter-spacing: 0.28em;
+    color: var(--cream-dim);
+    margin-top: 16px;
+    text-transform: uppercase;
+  }
+  .title-block .subtitle .sep {
+    color: var(--vermilion);
+    margin: 0 0.5em;
+  }
+
+  /* Bottom-left: live metrics */
+  .metric {
+    margin-bottom: 14px;
+  }
+  .metric .num {
+    font-family: 'Cormorant Garamond', serif;
+    font-weight: 300;
+    font-size: 38px;
+    line-height: 1;
+    color: var(--gold-bright);
+    letter-spacing: -0.01em;
+    font-variant-numeric: tabular-nums lining-nums;
+  }
+  .metric .unit {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 200;
+    font-size: 10px;
+    letter-spacing: 0.4em;
+    color: var(--cream-dim);
+    margin-left: 8px;
+    text-transform: uppercase;
+    vertical-align: 6px;
+  }
+
+  /* Bottom-right: hovered card */
+  .card {
+    transition: opacity 0.45s ease;
+    opacity: 0;
+  }
+  .card.is-visible { opacity: 1; }
+  .card .name {
+    font-family: 'Cormorant Garamond', serif;
+    font-style: italic;
+    font-weight: 300;
+    font-size: 26px;
+    color: var(--gold-bright);
+    line-height: 1.05;
+    text-shadow: 0 0 18px rgba(247,213,134,0.22);
+  }
+  .card .meta {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 300;
+    font-size: 11px;
+    letter-spacing: 0.22em;
+    color: var(--cream-dim);
+    margin-top: 8px;
+    text-transform: uppercase;
+  }
+  .card .meta .accent { color: var(--vermilion); }
+
+  /* Top-right: year filter */
+  .years {
+    display: flex;
+    gap: 18px;
+    align-items: baseline;
+    flex-direction: row-reverse;
+  }
+  .years .year {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 200;
+    font-size: 12px;
+    letter-spacing: 0.32em;
+    color: var(--cream-dim);
+    cursor: pointer;
+    position: relative;
+    padding: 4px 2px;
+    transition: color 0.3s ease;
+  }
+  .years .year:hover { color: var(--gold-bright); }
+  .years .year.active {
+    color: var(--gold-bright);
+  }
+  .years .year.active::after {
+    content: '';
+    position: absolute;
+    left: 0; right: 0; bottom: -2px;
+    height: 1px;
+    background: var(--gold);
+    box-shadow: 0 0 8px rgba(247,213,134,0.7);
+  }
+  .years .year.dimmed { opacity: 0.35; }
+
+  /* — Places list (reuses .year visual language) — */
+  .places {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 6px;
+    pointer-events: auto;
+  }
+  .places .place {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 200;
+    font-size: 11px;
+    letter-spacing: 0.28em;
+    color: var(--cream-dim);
+    cursor: pointer;
+    position: relative;
+    padding: 3px 0 3px 18px;
+    transition: color 0.3s ease, letter-spacing 0.4s ease;
+    text-transform: uppercase;
+  }
+  .places .place::before {
+    content: '·';
+    position: absolute;
+    left: 6px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--ink-rim);
+    transition: color 0.3s ease;
+  }
+  .places .place:hover { color: var(--gold-bright); }
+  .places .place:hover::before { color: var(--gold); }
+  .places .place.active {
+    color: var(--gold-bright);
+    letter-spacing: 0.36em;
+  }
+  .places .place.active::before {
+    color: var(--vermilion);
+    text-shadow: 0 0 8px rgba(215, 96, 56, 0.7);
+  }
+  .places .place .count {
+    font-size: 9px;
+    color: var(--ink-rim);
+    margin-left: 6px;
+    letter-spacing: 0.2em;
+  }
+
+  /* — Tour title: large fading place name (top-centre) — */
+  #hudPlaceLarge {
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.35s ease;
+  }
+  #hudPlaceLarge.is-visible { opacity: 1; }
+  .place-title {
+    font-family: 'Cormorant Garamond', serif;
+    font-style: italic;
+    font-weight: 300;
+    font-size: 56px;
+    color: var(--gold-bright);
+    line-height: 1;
+    letter-spacing: -0.01em;
+    text-shadow: 0 0 26px rgba(247, 213, 134, 0.32);
+  }
+  .place-dates {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 200;
+    font-size: 11px;
+    letter-spacing: 0.4em;
+    color: var(--cream-dim);
+    text-transform: uppercase;
+    margin-top: 14px;
+  }
+
+  /* Center reveal during wake-up */
+  .reveal {
+    position: fixed;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 5;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.8s ease;
+    text-align: center;
+  }
+  .reveal.is-visible { opacity: 1; }
+  .reveal .glyph {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 200;
+    font-size: 11px;
+    letter-spacing: 0.6em;
+    color: var(--cream-dim);
+    text-transform: uppercase;
+  }
+  .reveal .num {
+    font-family: 'Cormorant Garamond', serif;
+    font-weight: 300;
+    font-style: italic;
+    font-size: 88px;
+    line-height: 1;
+    color: var(--gold-bright);
+    margin-top: 18px;
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+    text-shadow: 0 0 36px rgba(247,213,134,0.35);
+  }
+
+  /* — Help bar — */
+  .help {
+    position: fixed;
+    bottom: 8px; left: 50%;
+    transform: translateX(-50%);
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 200;
+    font-size: 10px;
+    letter-spacing: 0.32em;
+    color: var(--cream-dim);
+    text-transform: uppercase;
+    opacity: 0;
+    animation: hudIn 1.2s ease 2.2s forwards;
+    z-index: 4;
+    pointer-events: none;
+    text-align: center;
+  }
+  .help .key {
+    color: var(--gold);
+    margin: 0 0.3em;
+  }
+  .help .sep { color: var(--ink-rim); margin: 0 0.8em; }
+
+  /* — Loading state — */
+  .loading {
+    position: fixed;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 6;
+    text-align: center;
+  }
+  .loading .glyph {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 200;
+    font-size: 11px;
+    letter-spacing: 0.6em;
+    color: var(--cream-dim);
+    text-transform: uppercase;
+  }
+  .loading .progress {
+    margin-top: 22px;
+    width: 220px;
+    height: 1px;
+    background: var(--ash);
+    position: relative;
+    overflow: hidden;
+  }
+  .loading .progress .bar {
+    position: absolute;
+    inset: 0;
+    width: 0%;
+    background: var(--gold);
+    box-shadow: 0 0 8px rgba(247,213,134,0.6);
+    transition: width 0.15s linear;
+  }
+</style>
+</head>
+<body>
+
+<canvas id="stage"></canvas>
+
+<!-- LOADING — replaced after wake-up by the title -->
+<div class="loading" id="loading">
+  <div class="glyph">Drawing the city</div>
+  <div class="progress"><div class="bar" id="loadingBar"></div></div>
+</div>
+
+<!-- TOP LEFT: identity — appears after wake-up -->
+<div class="hud hud--tl" id="hudTitle" style="display:none">
+  <div class="title-block">
+    <div class="eyebrow">Lumen Atlas</div>
+    <div class="title">Five thousand<br>kilometres</div>
+    <div class="subtitle" id="dateRange">— <span class="sep">·</span> —</div>
+  </div>
+</div>
+
+<!-- TOP RIGHT: year filter -->
+<div class="hud hud--tr" id="hudYears" style="display:none">
+  <div class="label">Years</div>
+  <div class="years" id="years"></div>
+  <div class="label" style="margin-top: 26px;">Places</div>
+  <div class="places" id="places"></div>
+</div>
+
+<!-- TOP CENTER: city/town name + the date range Vasil pushed there -->
+<div class="hud" id="hudPlaceLarge" style="display:none; top: 50px; left: 50%; transform: translateX(-50%); text-align: center;">
+  <div class="place-title" id="placeTitle">—</div>
+  <div class="place-dates" id="placeDates"></div>
+</div>
+
+<!-- BOTTOM LEFT: live counters -->
+<div class="hud hud--bl" id="hudMetrics" style="display:none">
+  <div class="metric">
+    <div class="label">Pushes</div>
+    <div><span class="num" id="mPushes">0</span></div>
+  </div>
+  <div class="metric">
+    <div class="label">Distance</div>
+    <div><span class="num" id="mKm">0</span><span class="unit">km</span></div>
+  </div>
+</div>
+
+<!-- BOTTOM RIGHT: hovered activity -->
+<div class="hud hud--br card" id="hudCard">
+  <div class="name" id="cardName"></div>
+  <div class="meta" id="cardMeta"></div>
+</div>
+
+<!-- HELP -->
+<div class="help" id="helpBar" style="display:none">
+  <span>auto-touring places</span><span class="sep">·</span>
+  <span><span class="key">hold space</span> fast-forward</span><span class="sep">·</span>
+  <span><span class="key">↑↓ ←→</span> shift towns</span><span class="sep">·</span>
+  <span><span class="key">click</span> a place</span><span class="sep">·</span>
+  <span><span class="key">drag</span> pan</span><span class="sep">·</span>
+  <span><span class="key">scroll</span> zoom</span><span class="sep">·</span>
+  <span><span class="key">R</span> replay</span>
+</div>
+
+<!-- THREE.js + the visualization -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+  }
+}
+</script>
+
+<script>
+/*__OSI_DATA_GOES_HERE__*/
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+
+/* ─────────────────────────────────────────────────────────────────
+   1. POLYLINE DECODE (Google encoded polyline algorithm)
+   ──────────────────────────────────────────────────────────────── */
+function decodePolyline(str, precision = 5) {
+  let index = 0, lat = 0, lng = 0;
+  const factor = Math.pow(10, precision);
+  const coords = [];
+  const len = str.length;
+  while (index < len) {
+    let result = 1, shift = 0, b;
+    do { b = str.charCodeAt(index++) - 63 - 1; result += b << shift; shift += 5; }
+    while (b >= 0x1f);
+    lat += (result & 1) ? ~(result >> 1) : (result >> 1);
+    result = 1; shift = 0;
+    do { b = str.charCodeAt(index++) - 63 - 1; result += b << shift; shift += 5; }
+    while (b >= 0x1f);
+    lng += (result & 1) ? ~(result >> 1) : (result >> 1);
+    coords.push(lat / factor, lng / factor);
+  }
+  return coords; // [lat0, lng0, lat1, lng1, ...]
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   2. MERCATOR PROJECTION (centred + per-pixel scaled)
+   ──────────────────────────────────────────────────────────────── */
+function mercator(lat, lng) {
+  const x = lng * Math.PI / 180;
+  const y = Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI / 180) / 2));
+  return [x, y];
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   3. BUILD GEOMETRY
+   Each activity becomes a strip of LineSegments. We pack all of them
+   into ONE BufferGeometry for one draw call. Per-vertex attributes:
+     position    (x,y,z)   z=0 (kept for future 3D)
+     activityId  (float)   index into the activities array
+     phase       (float)   parametric position [0,1] along path
+     curvature   (float)   smoothed turning rate at vertex
+   ──────────────────────────────────────────────────────────────── */
+function buildGeometry(activities) {
+  // First pass: project + compute bounding box
+  let minX =  Infinity, minY =  Infinity;
+  let maxX = -Infinity, maxY = -Infinity;
+  let totalSegments = 0;
+
+  const projected = activities.map(act => {
+    const flat = decodePolyline(act.p);
+    const pts  = [];
+    for (let i = 0; i < flat.length; i += 2) {
+      const [x, y] = mercator(flat[i], flat[i + 1]);
+      pts.push(x, y);
+      if (x < minX) minX = x; if (y < minY) minY = y;
+      if (x > maxX) maxX = x; if (y > maxY) maxY = y;
+    }
+    if (pts.length >= 4) totalSegments += (pts.length / 2) - 1;
+    return pts;
+  });
+
+  if (totalSegments === 0) throw new Error("No segments — empty dataset.");
+
+  // Centre + normalise to fit roughly [-1,1] on the dominant axis
+  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+  const range = Math.max(maxX - minX, maxY - minY);
+  const scale = 1.55 / range; // leave a 22% margin
+
+  // Each segment = 2 vertices
+  const N = totalSegments * 2;
+  const posAttr  = new Float32Array(N * 3);
+  const idAttr   = new Float32Array(N);
+  const phaseAttr= new Float32Array(N);
+  const curvAttr = new Float32Array(N);
+  const dateAttr = new Float32Array(N); // normalised activity time 0..1
+
+  let v = 0; // vertex cursor
+
+  // For curvature, dot of unit vectors between successive segments
+  const tmp = new THREE.Vector2(), prev = new THREE.Vector2();
+
+  // Per-activity segment range so we can later identify which activity
+  // a hovered segment belongs to.
+  const activityRanges = new Array(activities.length);
+
+  // Date range for normalisation
+  const dateMs = activities.map(a => Date.parse(a.d) || 0);
+  const dateMin = Math.min(...dateMs.filter(x => x > 0));
+  const dateMax = Math.max(...dateMs);
+  const dateSpan = Math.max(dateMax - dateMin, 1);
+
+  for (let aIdx = 0; aIdx < projected.length; aIdx++) {
+    const pts = projected[aIdx];
+    if (pts.length < 4) {
+      activityRanges[aIdx] = { start: -1, end: -1 };
+      continue;
+    }
+    const startV = v;
+    const dateNorm = (dateMs[aIdx] - dateMin) / dateSpan;
+
+    // Pre-compute centred points
+    const M = pts.length / 2;
+    const cp = new Float32Array(M * 2);
+    for (let i = 0; i < M; i++) {
+      cp[i*2  ] = (pts[i*2  ] - cx) * scale;
+      cp[i*2+1] = (pts[i*2+1] - cy) * scale;
+    }
+
+    for (let i = 0; i < M - 1; i++) {
+      const ax = cp[i*2  ], ay = cp[i*2+1];
+      const bx = cp[i*2+2], by = cp[i*2+3];
+
+      // Curvature: angle change vs previous segment
+      let curv = 0;
+      if (i > 0) {
+        const px = cp[i*2  ] - cp[(i-1)*2  ];
+        const py = cp[i*2+1] - cp[(i-1)*2+1];
+        const nx = bx - ax;
+        const ny = by - ay;
+        const lp = Math.hypot(px, py) || 1;
+        const ln = Math.hypot(nx, ny) || 1;
+        const dot = (px*nx + py*ny) / (lp*ln);
+        curv = 1 - Math.max(-1, Math.min(1, dot)); // 0 straight, 2 reverse
+      }
+
+      const phase = i / (M - 1);
+
+      // Vertex A
+      posAttr[v*3] = ax; posAttr[v*3+1] = ay; posAttr[v*3+2] = 0;
+      idAttr[v]    = aIdx;
+      phaseAttr[v] = phase;
+      curvAttr[v]  = curv;
+      dateAttr[v]  = dateNorm;
+      v++;
+      // Vertex B
+      posAttr[v*3] = bx; posAttr[v*3+1] = by; posAttr[v*3+2] = 0;
+      idAttr[v]    = aIdx;
+      phaseAttr[v] = phase;
+      curvAttr[v]  = curv;
+      dateAttr[v]  = dateNorm;
+      v++;
+    }
+    activityRanges[aIdx] = { start: startV, end: v };
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(posAttr, 3));
+  geometry.setAttribute('aId',      new THREE.BufferAttribute(idAttr, 1));
+  geometry.setAttribute('aPhase',   new THREE.BufferAttribute(phaseAttr, 1));
+  geometry.setAttribute('aCurv',    new THREE.BufferAttribute(curvAttr, 1));
+  geometry.setAttribute('aDate',    new THREE.BufferAttribute(dateAttr, 1));
+
+  return { geometry, activityRanges, dateMin, dateMax, totalSegments,
+           cx, cy, scale };
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   3b. GEOGRAPHIC CLUSTERING — group activities into "places"
+   (Vienna, Skopje, Prilep, Berovo, Ohrid, …) by start_latlng.
+   ──────────────────────────────────────────────────────────────── */
+const LATLNG_THRESHOLD = 0.45; // degrees — separates Skopje (42.0) from Prilep (41.3)
+function clusterByLatlng(activities) {
+  const clusters = [];
+  activities.forEach((act, i) => {
+    const sll = act.s || [0, 0];
+    const lat = sll[0], lng = sll[1];
+    if (!lat || !lng) return;
+    let best = -1;
+    for (let j = 0; j < clusters.length; j++) {
+      const cl = clusters[j];
+      if (Math.abs(cl.lat - lat) < LATLNG_THRESHOLD &&
+          Math.abs(cl.lng - lng) < LATLNG_THRESHOLD) {
+        best = j; break;
+      }
+    }
+    if (best >= 0) {
+      const cl = clusters[best];
+      cl.lat = (cl.lat * cl.n + lat) / (cl.n + 1);
+      cl.lng = (cl.lng * cl.n + lng) / (cl.n + 1);
+      cl.n++;
+      cl.indices.push(i);
+      cl.minLat = Math.min(cl.minLat, lat);
+      cl.maxLat = Math.max(cl.maxLat, lat);
+      cl.minLng = Math.min(cl.minLng, lng);
+      cl.maxLng = Math.max(cl.maxLng, lng);
+      if (act.c) cl.cityVotes[act.c] = (cl.cityVotes[act.c] || 0) + 1;
+    } else {
+      clusters.push({
+        lat, lng,
+        minLat: lat, maxLat: lat, minLng: lng, maxLng: lng,
+        n: 1, indices: [i],
+        cityVotes: act.c ? { [act.c]: 1 } : {}
+      });
+    }
+  });
+  // Keep clusters with ≥3 activities; tiny clusters (1-off journeys) ignored
+  const filtered = clusters.filter(c => c.n >= 3);
+  filtered.forEach(c => {
+    const votes = Object.entries(c.cityVotes).sort((a,b) => b[1] - a[1]);
+    c.label = votes[0] ? votes[0][0] : `${c.lat.toFixed(2)}°, ${c.lng.toFixed(2)}°`;
+    // Build a "core" bbox from the 15th–85th percentile of activity
+    // start_latlngs — drops the long out-of-town pushes that would
+    // otherwise pull the frame wide and leave the city centre as a dot.
+    const lats = c.indices.map(i => activities[i].s[0]).sort((a,b) => a-b);
+    const lngs = c.indices.map(i => activities[i].s[1]).sort((a,b) => a-b);
+    const q = (arr, p) => arr[Math.max(0, Math.min(arr.length - 1,
+                                                   Math.floor((arr.length - 1) * p)))];
+    // Inner ~2% of start_latlngs — a single intersection's worth.
+    c.coreMinLat = q(lats, 0.49);
+    c.coreMaxLat = q(lats, 0.51);
+    c.coreMinLng = q(lngs, 0.49);
+    c.coreMaxLng = q(lngs, 0.51);
+    c.medLat = q(lats, 0.5);
+    c.medLng = q(lngs, 0.5);
+    // Date range — when Vasil was first / last pushing in this place.
+    const dms = c.indices.map(i => Date.parse(activities[i].d) || 0)
+                         .filter(x => x > 0);
+    c.firstMs = dms.length ? Math.min(...dms) : 0;
+    c.lastMs  = dms.length ? Math.max(...dms) : 0;
+  });
+  // Chronological order — earliest first-visit first. Matches the
+  // wake-up reveal so the camera follows Vasil's actual timeline.
+  filtered.sort((a,b) => a.firstMs - b.firstMs);
+  return filtered;
+}
+
+// Pretty month-year for the title subtitle ("Mar 2023 – today")
+function fmtMonth(ms) {
+  if (!ms) return '';
+  const d = new Date(ms);
+  return d.toLocaleString('en-GB', { month: 'short', year: 'numeric' });
+}
+function fmtRange(firstMs, lastMs) {
+  if (!firstMs) return '';
+  const a = fmtMonth(firstMs);
+  const b = fmtMonth(lastMs);
+  return (a === b) ? a : `${a} — ${b}`;
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   4. SHADERS — additive glow + per-activity hover + wake-up
+   ──────────────────────────────────────────────────────────────── */
+const VERTEX = /* glsl */`
+  attribute float aId;
+  attribute float aPhase;
+  attribute float aCurv;
+  attribute float aDate;
+
+  uniform float uTime;
+  uniform float uHoverId;       // hovered activity index, -1 if none
+  uniform float uActiveId;      // currently-tourd activity, -1 if none
+  uniform float uWakeDate;      // 0..1 — gate by activity normalised date
+  uniform float uYearMask0;     // bitmask-ish encoding 4 years
+  uniform float uYearMask1;
+  uniform float uYearMask2;
+  uniform float uYearMask3;
+  uniform float uYearStart0;    // boundaries between years (normalised)
+  uniform float uYearStart1;
+  uniform float uYearStart2;
+  uniform float uYearStart3;
+
+  varying float vIntensity;
+  varying float vHover;
+  varying float vActive;
+  varying float vCurv;
+  varying float vPhase;
+
+  float yearMaskFor(float d) {
+    if (d < uYearStart1) return uYearMask0;
+    if (d < uYearStart2) return uYearMask1;
+    if (d < uYearStart3) return uYearMask2;
+    return uYearMask3;
+  }
+
+  void main() {
+    // Synthetic IMU breath: each activity has its own phase + frequency
+    float phaseSeed = fract(aId * 0.12348 + 0.3);
+    float freq = 0.6 + phaseSeed * 1.4;
+    float pulse = 0.5 + 0.5 * sin(uTime * freq + phaseSeed * 6.28 + aPhase * 8.0);
+    // Sharper local breathing where curvature is high (rough corners)
+    pulse = pow(pulse, 1.0 + aCurv * 4.0);
+
+    // Wake gate: only show activities whose date has 'come up' yet
+    float wakeAlpha = smoothstep(uWakeDate - 0.04, uWakeDate, aDate);
+    wakeAlpha = 1.0 - wakeAlpha; // we want activities BEFORE the wake date visible
+    // Actually we want EARLIER activities (lower aDate) to show first:
+    wakeAlpha = step(aDate, uWakeDate);
+
+    // Year mask gate
+    float ymask = yearMaskFor(aDate);
+
+    // Hover boost + active-tour pulse
+    vHover  = step(0.5, 1.0 - abs(aId - uHoverId));
+    vActive = step(0.5, 1.0 - abs(aId - uActiveId));
+
+    // Intensity = breath × wake × year × small base
+    vIntensity = (0.28 + 0.72 * pulse) * wakeAlpha * ymask;
+    vCurv = aCurv;
+    vPhase = aPhase;
+
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+
+const FRAGMENT = /* glsl */`
+  precision highp float;
+  varying float vIntensity;
+  varying float vHover;
+  varying float vActive;
+  varying float vCurv;
+  varying float vPhase;
+
+  uniform float uTime;
+  uniform float uHasActive;
+  uniform vec3 uGold;
+  uniform vec3 uGoldBright;
+  uniform vec3 uGhostBlue;
+  uniform vec3 uVermilion;
+
+  void main() {
+    vec3 base = mix(uGhostBlue, uGold, smoothstep(0.0, 0.6, vIntensity));
+    base = mix(base, uVermilion, clamp(vCurv * 0.35, 0.0, 0.6));
+
+    // Hover boost
+    base = mix(base, uGoldBright, vHover * 0.85);
+
+    float alpha = vIntensity * 0.65 + vHover * 0.6;
+
+    // When the tour is highlighting one push, the rest of the map sinks
+    // to ~25% brightness — otherwise the additive gold tangle would
+    // wash out the red and you'd never see it.
+    float dim = 1.0 - 0.75 * uHasActive * (1.0 - vActive);
+    alpha *= dim;
+
+    // Active-tour blink — hot saturated neon-red, pulsed at ~1.2 Hz.
+    // Override base hue completely so it doesn't mix toward gold.
+    float pulse = 0.55 + 0.45 * sin(uTime * 7.5);
+    vec3 activeRed = vec3(1.0, 0.16, 0.10);
+    base  = mix(base,  activeRed, vActive);
+    alpha = max(alpha, vActive * pulse * 1.15);
+
+    alpha = clamp(alpha, 0.0, 1.0);
+    gl_FragColor = vec4(base * alpha, alpha);
+  }
+`;
+
+/* ─────────────────────────────────────────────────────────────────
+   5. MAIN — Three.js scene, controls, HUD updates
+   ──────────────────────────────────────────────────────────────── */
+async function main() {
+  if (typeof OSI_DATA === 'undefined' || !OSI_DATA.length) {
+    document.getElementById('loading').innerHTML =
+      '<div class="glyph">no data — run tools/build_viz_data.py first</div>';
+    return;
+  }
+
+  // Fake a brief loading bar (geometry build is fast but we want the
+  // dignified hush)
+  const bar = document.getElementById('loadingBar');
+  for (let p = 0; p <= 80; p += 4) {
+    bar.style.width = p + '%';
+    await new Promise(r => setTimeout(r, 14));
+  }
+
+  const built = buildGeometry(OSI_DATA);
+  bar.style.width = '100%';
+  await new Promise(r => setTimeout(r, 200));
+
+  // Renderer
+  const canvas = document.getElementById('stage');
+  const renderer = new THREE.WebGLRenderer({
+    canvas,
+    antialias: true,
+    alpha: false,
+    powerPreference: 'high-performance',
+  });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setClearColor(0x060c16, 1);
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 10);
+  camera.position.set(0, 0, 1);
+
+  function resizeCamera() {
+    const w = window.innerWidth, h = window.innerHeight;
+    const aspect = w / h;
+    const halfH = 1.0;
+    const halfW = halfH * aspect;
+    camera.left = -halfW;
+    camera.right = halfW;
+    camera.top = halfH;
+    camera.bottom = -halfH;
+    camera.updateProjectionMatrix();
+    renderer.setSize(w, h);
+  }
+  resizeCamera();
+  window.addEventListener('resize', resizeCamera);
+
+  // Year boundaries
+  const years = ['2023','2024','2025','2026'];
+  const yearBoundsMs = years.map(y =>
+    Date.UTC(parseInt(y) + 1, 0, 1)); // exclusive upper bound
+  const yearStartsNorm = yearBoundsMs.map(ms =>
+    Math.max(0, Math.min(1, (ms - built.dateMin) / (built.dateMax - built.dateMin))));
+  // Active mask, all years on by default
+  const yearMask = [1,1,1,1];
+
+  // Material
+  const u = {
+    uTime:        { value: 0 },
+    uHoverId:     { value: -1 },
+    uActiveId:    { value: -1 },
+    uHasActive:   { value: 0 },   // 1 → dim the rest of the map
+    uWakeDate:    { value: 0 },
+    uGold:        { value: new THREE.Color('#f7d586') },
+    uGoldBright:  { value: new THREE.Color('#fff6d6') },
+    uGhostBlue:   { value: new THREE.Color('#82a7ce') },
+    uVermilion:   { value: new THREE.Color('#d76038') },
+    uYearMask0: { value: 1 }, uYearStart0: { value: yearStartsNorm[0] },
+    uYearMask1: { value: 1 }, uYearStart1: { value: yearStartsNorm[1] },
+    uYearMask2: { value: 1 }, uYearStart2: { value: yearStartsNorm[2] },
+    uYearMask3: { value: 1 }, uYearStart3: { value: yearStartsNorm[3] },
+  };
+  const material = new THREE.ShaderMaterial({
+    vertexShader: VERTEX,
+    fragmentShader: FRAGMENT,
+    uniforms: u,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthTest: false,
+    depthWrite: false,
+  });
+
+  const lineMesh = new THREE.LineSegments(built.geometry, material);
+  scene.add(lineMesh);
+
+  // A second pass with a thinner mesh would help anti-aliasing, but
+  // standard LineSegments draw 1-px lines — fine on retina, soft on
+  // standard. We compensate with the additive accumulation.
+
+  // ─── Camera transform (pan + zoom) ──────────────────
+  const view = { x: 0, y: 0, scale: 1.0 };
+  function applyView() {
+    lineMesh.position.x = view.x;
+    lineMesh.position.y = view.y;
+    lineMesh.scale.x = view.scale;
+    lineMesh.scale.y = view.scale;
+  }
+  applyView();
+
+  // Drag pan
+  let dragging = false, dragStart = null;
+  canvas.addEventListener('pointerdown', e => {
+    dragging = true;
+    dragStart = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y };
+    document.body.classList.add('is-dragging');
+  });
+  window.addEventListener('pointerup', () => {
+    dragging = false;
+    document.body.classList.remove('is-dragging');
+  });
+  window.addEventListener('pointermove', e => {
+    if (!dragging) return;
+    const dxPx = e.clientX - dragStart.x;
+    const dyPx = e.clientY - dragStart.y;
+    const w = window.innerWidth, h = window.innerHeight;
+    // Convert pixels → world units (camera is [-aspect,aspect]×[-1,1])
+    const aspect = w / h;
+    const dx = (dxPx / w) * 2 * aspect;
+    const dy = -(dyPx / h) * 2;
+    view.x = dragStart.vx + dx;
+    view.y = dragStart.vy + dy;
+    applyView();
+  });
+
+  // Wheel zoom — zoom around cursor
+  canvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    const factor = Math.exp(-e.deltaY * 0.0015);
+    const w = window.innerWidth, h = window.innerHeight;
+    const aspect = w / h;
+    // Cursor in world coords:
+    const cxw = ((e.clientX / w) - 0.5) * 2 * aspect;
+    const cyw = -((e.clientY / h) - 0.5) * 2;
+    // The world point under the cursor before zoom:
+    const wxBefore = (cxw - view.x) / view.scale;
+    const wyBefore = (cyw - view.y) / view.scale;
+    view.scale *= factor;
+    view.scale = Math.max(0.3, Math.min(40, view.scale));
+    view.x = cxw - wxBefore * view.scale;
+    view.y = cyw - wyBefore * view.scale;
+    applyView();
+  }, { passive: false });
+
+  // ─── Hover identification — coarse but cheap ──────────────────
+  // We find the activity whose centroid is closest to the cursor in world
+  // space. Computed once at build time.
+  const centroids = OSI_DATA.map((_, i) => {
+    const r = built.activityRanges[i];
+    if (r.start < 0) return null;
+    let cx = 0, cy = 0, n = 0;
+    const arr = built.geometry.attributes.position.array;
+    for (let v = r.start; v < r.end; v += 8) { // sub-sample
+      cx += arr[v*3]; cy += arr[v*3+1]; n++;
+    }
+    return n ? { x: cx/n, y: cy/n } : null;
+  });
+
+  const cardEl   = document.getElementById('hudCard');
+  const cardName = document.getElementById('cardName');
+  const cardMeta = document.getElementById('cardMeta');
+  let lastHoverId = -1;
+  let mouseLast = null;
+
+  canvas.addEventListener('pointermove', e => {
+    mouseLast = { x: e.clientX, y: e.clientY };
+  });
+  canvas.addEventListener('pointerleave', () => {
+    mouseLast = null;
+    cardEl.classList.remove('is-visible');
+    u.uHoverId.value = -1;
+  });
+
+  function updateHover() {
+    if (!mouseLast) return;
+    const w = window.innerWidth, h = window.innerHeight;
+    const aspect = w / h;
+    const wx = (((mouseLast.x / w) - 0.5) * 2 * aspect - view.x) / view.scale;
+    const wy = (-((mouseLast.y / h) - 0.5) * 2 - view.y) / view.scale;
+
+    let bestId = -1, bestD = 0.04 / view.scale; // proximity threshold
+    for (let i = 0; i < centroids.length; i++) {
+      const c = centroids[i];
+      if (!c) continue;
+      // Also gate by year mask
+      const dn = built.geometry.attributes.aDate.array[built.activityRanges[i].start] || 0;
+      const yi = dn < yearStartsNorm[1] ? 0
+               : dn < yearStartsNorm[2] ? 1
+               : dn < yearStartsNorm[3] ? 2 : 3;
+      if (!yearMask[yi]) continue;
+      const dx = c.x - wx, dy = c.y - wy;
+      const d = Math.sqrt(dx*dx + dy*dy);
+      if (d < bestD) { bestD = d; bestId = i; }
+    }
+    if (bestId !== lastHoverId) {
+      lastHoverId = bestId;
+      u.uHoverId.value = bestId;
+      if (bestId >= 0) {
+        const a = OSI_DATA[bestId];
+        const sll = a.s || [0, 0];
+        const ns = sll[0] >= 0 ? 'N' : 'S';
+        const ew = sll[1] >= 0 ? 'E' : 'W';
+        cardName.textContent = sll[0]
+          ? `${Math.abs(sll[0]).toFixed(4)}° ${ns}  ·  ${Math.abs(sll[1]).toFixed(4)}° ${ew}`
+          : (a.n || '(untitled push)');
+        const dMs = Date.parse(a.d) || 0;
+        const hhmm = dMs ? new Date(dMs).toLocaleString('en-GB',
+            { hour: '2-digit', minute: '2-digit', hour12: false }) : '';
+        const km = (a.m / 1000).toFixed(2);
+        cardMeta.innerHTML = `${hhmm} <span class="accent">·</span> ${km} km`;
+        cardEl.classList.add('is-visible');
+      } else {
+        cardEl.classList.remove('is-visible');
+      }
+    }
+  }
+
+  // ─── Year filter UI ──────────────────
+  const yearsEl = document.getElementById('years');
+  years.forEach((y, idx) => {
+    const el = document.createElement('div');
+    el.className = 'year active';
+    el.textContent = y;
+    el.addEventListener('click', () => {
+      yearMask[idx] = yearMask[idx] ? 0 : 1;
+      el.classList.toggle('active', !!yearMask[idx]);
+      el.classList.toggle('dimmed', !yearMask[idx]);
+      u['uYearMask' + idx].value = yearMask[idx];
+    });
+    yearsEl.appendChild(el);
+  });
+
+  // ─── PLACES: cluster activities, build tour, render city pills ────────
+  const clusters = clusterByLatlng(OSI_DATA);
+
+  // Project each cluster's centroid + CORE bbox into the same normalised
+  // space the geometry lives in (centre cx,cy; scale `scale`). The core
+  // bbox is the IQR (15th–85th percentile) of the activity start
+  // locations — tight to the dense knot of the city, ignoring outliers.
+  clusters.forEach(c => {
+    const [mxA, myA] = mercator(c.coreMaxLat, c.coreMinLng);
+    const [mxB, myB] = mercator(c.coreMinLat, c.coreMaxLng);
+    c.normMinX = (Math.min(mxA, mxB) - built.cx) * built.scale;
+    c.normMaxX = (Math.max(mxA, mxB) - built.cx) * built.scale;
+    c.normMinY = (Math.min(myA, myB) - built.cy) * built.scale;
+    c.normMaxY = (Math.max(myA, myB) - built.cy) * built.scale;
+    const [cxM, cyM] = mercator(c.medLat, c.medLng); // median, not mean
+    c.normX = (cxM - built.cx) * built.scale;
+    c.normY = (cyM - built.cy) * built.scale;
+  });
+
+  // Tour stops — overview first, then each cluster largest → smallest
+  // Overall date range for the overview stop
+  const allFirstMs = Math.min(...clusters.map(c => c.firstMs || Infinity));
+  const allLastMs  = Math.max(...clusters.map(c => c.lastMs  || 0));
+
+  // ── PER-ACTIVITY TOUR STOPS ────────────────────────────────────
+  // One stop per push, sorted chronologically. The camera flies to
+  // each activity's own bounding box on the date it happened.
+  const dayFmt = ms => ms
+    ? new Date(ms).toLocaleString('en-GB',
+        { day: '2-digit', month: 'short', year: 'numeric' })
+    : '';
+
+  const activityStops = [];
+  OSI_DATA.forEach((act, i) => {
+    if (!act.p) return;
+    const flat = decodePolyline(act.p);
+    if (flat.length < 4) return;
+    let minMX = Infinity, minMY = Infinity;
+    let maxMX = -Infinity, maxMY = -Infinity;
+    for (let k = 0; k < flat.length; k += 2) {
+      const [mx, my] = mercator(flat[k], flat[k+1]);
+      if (mx < minMX) minMX = mx; if (my < minMY) minMY = my;
+      if (mx > maxMX) maxMX = mx; if (my > maxMY) maxMY = my;
+    }
+    const nMinX = (minMX - built.cx) * built.scale;
+    const nMaxX = (maxMX - built.cx) * built.scale;
+    const nMinY = (minMY - built.cy) * built.scale;
+    const nMaxY = (maxMY - built.cy) * built.scale;
+
+    // Cluster the activity belongs to (so the title shows the right city)
+    const sll = act.s || [0, 0];
+    let cluster = null;
+    if (sll[0]) {
+      let bestD = Infinity;
+      for (const c of clusters) {
+        const d = Math.max(Math.abs(c.lat - sll[0]),
+                           Math.abs(c.lng - sll[1]));
+        if (d < bestD && d < LATLNG_THRESHOLD) { bestD = d; cluster = c; }
+      }
+    }
+    activityStops.push({
+      kind: 'activity',
+      osiIdx: i,                            // index into OSI_DATA, drives shader pulse
+      cluster,
+      cityLabel: cluster ? cluster.label : '—',
+      label: (act.n && act.n.trim()) || (cluster ? cluster.label : 'Push'),
+      dates: dayFmt(Date.parse(act.d)),
+      dateMs: Date.parse(act.d) || 0,
+      normMinX: nMinX, normMaxX: nMaxX,
+      normMinY: nMinY, normMaxY: nMaxY,
+      normX: (nMinX + nMaxX) / 2,
+      normY: (nMinY + nMaxY) / 2,
+    });
+  });
+  activityStops.sort((a, b) => a.dateMs - b.dateMs);
+
+  const tourStops = [{
+    kind: 'overview',
+    label: 'All Places',
+    dates: fmtRange(allFirstMs, allLastMs),
+  }, ...activityStops];
+
+  // Render the place pills — one for overview + one per cluster.
+  // Clicking a pill jumps to the first activity in that cluster.
+  const placesEl = document.getElementById('places');
+  const pillData = [
+    { kind: 'overview', label: 'OVERVIEW', cluster: null, jumpTo: 0 }
+  ];
+  clusters.forEach(c => {
+    let firstIdx = 0;
+    for (let j = 0; j < tourStops.length; j++) {
+      if (tourStops[j].cluster === c) { firstIdx = j; break; }
+    }
+    pillData.push({ kind: 'city', label: c.label, count: c.n, cluster: c,
+                    jumpTo: firstIdx });
+  });
+  const pillEls = pillData.map(pill => {
+    const el = document.createElement('div');
+    el.className = 'place';
+    el.innerHTML = pill.kind === 'overview'
+      ? `OVERVIEW`
+      : `${pill.label} <span class="count">${pill.count}</span>`;
+    el.addEventListener('click', () => jumpToStop(pill.jumpTo, true));
+    placesEl.appendChild(el);
+    return el;
+  });
+
+  const placeTitle   = document.getElementById('placeTitle');
+  const placeDates   = document.getElementById('placeDates');
+  const placeLargeEl = document.getElementById('hudPlaceLarge');
+  placeLargeEl.style.display = 'block';
+
+  // Compute target view for a stop. Activity stops lock to the CLUSTER'S
+  // view, not the push's own bbox — so the camera sits still while the
+  // tour cycles through 200 Skopje pushes in a row, and only re-aims
+  // when Vasil's actual town changes.
+  function computeTargetView(stop) {
+    const aspect = window.innerWidth / window.innerHeight;
+    if (stop.kind === 'overview' || !stop.cluster) {
+      return { x: 0, y: 0, scale: 1.0 };
+    }
+    const c = stop.cluster;
+    const w = Math.max(c.normMaxX - c.normMinX, 0.00008);
+    const h = Math.max(c.normMaxY - c.normMinY, 0.00008);
+    const sX = (2 * aspect * 0.025) / w;
+    const sY = (2 * 0.025) / h;
+    const s = Math.min(sX, sY, 30000);
+    return { x: -c.normX * s, y: -c.normY * s, scale: s };
+  }
+
+  // Tour state — 920 activity stops + 1 overview, ~1.4 s on each push.
+  let currentStop = 0;
+  let nextAdvanceAt = 0;
+  let tourPauseUntil = 0;
+  const DWELL_MS = 550;
+  const OVERVIEW_DWELL_MS = 3000;
+  const TOUR_PAUSE_MS = 14000;
+  const EASE = 0.34;
+
+  // Format the bottom-right meta — time + coordinates of the push.
+  const timeFmt = ms => ms
+    ? new Date(ms).toLocaleString('en-GB',
+        { hour: '2-digit', minute: '2-digit', hour12: false })
+    : '';
+  const coordFmt = (lat, lng) => {
+    if (!lat || !lng) return '';
+    const ns = lat >= 0 ? 'N' : 'S';
+    const ew = lng >= 0 ? 'E' : 'W';
+    return `${Math.abs(lat).toFixed(4)}° ${ns}  ·  ${Math.abs(lng).toFixed(4)}° ${ew}`;
+  };
+
+  let lastCity = null;
+  function showStop(idx, instant) {
+    currentStop = (idx + tourStops.length) % tourStops.length;
+    const stop = tourStops[currentStop];
+
+    // TOP CENTRE: title = the Strava activity name (or "All Places" on
+    // overview). City crossfade only when we actually change towns —
+    // otherwise the camera can glide through 200 Skopje pushes without
+    // the title flashing.
+    const city = stop.cityLabel || stop.label;
+    if (city !== lastCity || instant) {
+      placeLargeEl.classList.remove('is-visible');
+      setTimeout(() => {
+        placeTitle.textContent = stop.label;
+        placeDates.textContent = stop.dates || '';
+        placeLargeEl.classList.add('is-visible');
+      }, 80);
+      lastCity = city;
+    } else {
+      placeTitle.textContent = stop.label;
+      placeDates.textContent = stop.dates || '';
+    }
+
+    // BOTTOM RIGHT: time + coordinates of the currently-playing push
+    if (stop.kind === 'activity') {
+      const act = OSI_DATA[stop.osiIdx];
+      const sll = act.s || [0, 0];
+      cardName.textContent = coordFmt(sll[0], sll[1]);
+      cardMeta.innerHTML   =
+        `${timeFmt(stop.dateMs)} <span class="accent">·</span> ${(act.m/1000).toFixed(2)} km`;
+      cardEl.classList.add('is-visible');
+    } else {
+      cardEl.classList.remove('is-visible');
+    }
+
+    // Shader pulse — the currently-toured push blinks vermilion, and
+    // the rest of the map dims so the red can actually be seen.
+    u.uActiveId.value  = (stop.kind === 'activity') ? stop.osiIdx : -1;
+    u.uHasActive.value = (stop.kind === 'activity') ? 1 : 0;
+
+    // Pill highlights
+    pillData.forEach((pill, i) => {
+      const active = (pill.kind === 'overview' && stop.kind === 'overview')
+                  || (pill.cluster && pill.cluster === stop.cluster);
+      pillEls[i].classList.toggle('active', active);
+    });
+  }
+
+  function jumpToStop(idx, fromClick) {
+    showStop(idx, false);
+    nextAdvanceAt = performance.now() + DWELL_MS;
+    if (fromClick) tourPauseUntil = performance.now() + TOUR_PAUSE_MS;
+  }
+
+  function userInteracted() {
+    tourPauseUntil = performance.now() + TOUR_PAUSE_MS;
+  }
+  canvas.addEventListener('pointerdown', userInteracted);
+  canvas.addEventListener('wheel', userInteracted, { passive: true });
+
+  // ─── Wake-up animation: paths reveal chronologically ──────────────────
+  const totalKm = OSI_DATA.reduce((s,a) => s + a.m, 0) / 1000;
+  const mPushes = document.getElementById('mPushes');
+  const mKm     = document.getElementById('mKm');
+
+  // Title date range
+  const firstD = OSI_DATA[0].d.slice(0,10);
+  const lastD  = OSI_DATA[OSI_DATA.length-1].d.slice(0,10);
+  document.getElementById('dateRange').innerHTML =
+    `${firstD} <span class="sep">·</span> ${lastD}`;
+
+  // Show HUD shells
+  document.getElementById('hudTitle').style.display = 'block';
+  document.getElementById('hudYears').style.display = 'block';
+  document.getElementById('hudMetrics').style.display = 'block';
+  document.getElementById('helpBar').style.display = 'block';
+  document.getElementById('loading').style.display = 'none';
+
+  // Wake-up: increment uWakeDate from 0 to 1 over WAKE_S seconds,
+  // ticking the counters in lockstep.
+  const WAKE_S = 3.8;
+  let wakeStartMs = performance.now();
+  let waking = true;
+
+  // Precompute the date attr at each activity's first vertex (for the
+  // counter binary search). Maps activity index → normalised date.
+  const actDateNorm = new Array(OSI_DATA.length);
+  {
+    const arr = built.geometry.attributes.aDate.array;
+    for (let i = 0; i < OSI_DATA.length; i++) {
+      const r = built.activityRanges[i];
+      actDateNorm[i] = (r.start >= 0) ? arr[r.start] : 0;
+    }
+  }
+  // And cumulative km
+  const cumKm = new Float32Array(OSI_DATA.length + 1);
+  for (let i = 0; i < OSI_DATA.length; i++) {
+    cumKm[i + 1] = cumKm[i] + OSI_DATA[i].m / 1000;
+  }
+
+  function tickWake(nowMs) {
+    if (!waking) return;
+    const t = (nowMs - wakeStartMs) / 1000 / WAKE_S;
+    if (t >= 1) {
+      u.uWakeDate.value = 1.01;
+      mPushes.textContent = OSI_DATA.length.toLocaleString();
+      mKm.textContent = Math.round(totalKm).toLocaleString();
+      waking = false;
+      // Hand-off: kick the tour after the wake-up settles for 1.5 s
+      nextAdvanceAt = performance.now() + 1500;
+      showStop(0, true); // overview first
+      return;
+    }
+    // Ease out cubic
+    const e = 1 - Math.pow(1 - t, 3);
+    u.uWakeDate.value = e;
+    // Binary search: how many activities have date ≤ e
+    let lo = 0, hi = OSI_DATA.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (actDateNorm[mid] <= e) lo = mid + 1;
+      else hi = mid;
+    }
+    mPushes.textContent = lo.toLocaleString();
+    mKm.textContent = Math.round(cumKm[lo]).toLocaleString();
+  }
+
+  // Replay key, arrows, and hold-Space-to-fast-forward.
+  let fastMode = false;
+  window.addEventListener('keydown', e => {
+    const k = e.key.toLowerCase();
+    if (k === 'r') {
+      wakeStartMs = performance.now();
+      u.uWakeDate.value = 0;
+      waking = true;
+    } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown' ||
+               e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      e.preventDefault();
+      const dir = (e.key === 'ArrowUp' || e.key === 'ArrowRight') ? +1 : -1;
+      jumpToStop(currentStop + dir, true);
+    } else if (e.code === 'Space') {
+      e.preventDefault();
+      // Hold space → fast-forward through pushes. Auto-repeat keydowns
+      // (e.repeat) flood in while held; just flip the flag once.
+      if (!fastMode) {
+        fastMode = true;
+        nextAdvanceAt = 0; // force immediate advance
+      }
+    }
+  });
+  window.addEventListener('keyup', e => {
+    if (e.code === 'Space') {
+      e.preventDefault();
+      fastMode = false;
+    }
+  });
+
+  // ─── Auto drift when idle ──────────────────
+  let lastInteract = performance.now();
+  ['pointerdown', 'wheel', 'keydown'].forEach(ev =>
+    window.addEventListener(ev, () => lastInteract = performance.now()));
+
+  // ─── Render loop ──────────────────
+  const clock = new THREE.Clock();
+  function frame() {
+    const t  = clock.getElapsedTime();
+    u.uTime.value = t;
+
+    const nowMs = performance.now();
+    if (waking) tickWake(nowMs);
+
+    // Auto-tour: advance + ease toward current stop's target view.
+    // While snoozed (after user interaction), pin the title pill set but
+    // let the user pan/zoom freely — easing stops.
+    if (!waking) {
+      // Holding Space overrides drag-snooze and accelerates everything.
+      const snoozed = nowMs < tourPauseUntil && !fastMode;
+      if (!snoozed && nowMs >= nextAdvanceAt) {
+        showStop(currentStop + 1, false);
+        const dwell = fastMode ? 60
+                    : (tourStops[currentStop].kind === 'overview'
+                        ? OVERVIEW_DWELL_MS : DWELL_MS);
+        nextAdvanceAt = nowMs + dwell;
+      }
+      if (!snoozed) {
+        const target = computeTargetView(tourStops[currentStop]);
+        const ease = fastMode ? 0.85 : EASE;
+        view.x     += (target.x     - view.x)     * ease;
+        view.y     += (target.y     - view.y)     * ease;
+        view.scale += (target.scale - view.scale) * ease;
+        applyView();
+      }
+    }
+
+    updateHover();
+    renderer.render(scene, camera);
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  // Final whisper — log the milestone to console for the dev-tools crowd
+  console.log(
+    '%c Lumen Atlas  ',
+    'background:#f7d586;color:#060c16;font-family:Cormorant Garamond,serif;font-size:18px;font-style:italic;padding:6px 14px;',
+    `\n  ${OSI_DATA.length.toLocaleString()} outdoor wheelchair pushes`,
+    `\n  ${totalKm.toFixed(2)} km lifetime`,
+    `\n  ${firstD} → ${lastD}\n`
+  );
+}
+
+main().catch(err => {
+  console.error(err);
+  document.getElementById('loading').innerHTML =
+    '<div class="glyph" style="color:#d76038">error — ' + err.message + '</div>';
+});
+</script>
+</body>
+</html>
