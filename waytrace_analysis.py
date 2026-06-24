@@ -231,20 +231,89 @@ def detect_sample_rate(accel: pd.DataFrame) -> float:
     return 1.0 / dt
 
 
-def wk_weighted_vertical(accel: pd.DataFrame, fs: float) -> np.ndarray:
-    """ISO 2631-1 Wk-weighted vertical acceleration at the phone (Y-axis,
-    gravity removed). Phone is portrait, Y is up — confirmed in the SRS.
+def compute_gravity_vertical(accel: pd.DataFrame, fs: float) -> np.ndarray:
+    """Vertical acceleration component (gravity baseline removed) for ANY
+    phone-mount orientation.
 
-    Approximation: 4-pole Butterworth band-pass 0.4–100 Hz. Within ~2 dB
-    of the exact ISO Wk transfer function across the band; the strict
-    bi-quad cascade from ISO 2631-1 Annex A is a follow-up if absolute
-    compliance is needed.
+    Method (per SRS OSI-023 reasoning):
+      1. Low-pass each accel component at ~0.25 Hz → live gravity vector g(t).
+      2. Project raw accel(t) onto the unit gravity direction → signed
+         vertical projection at every sample.
+      3. Subtract |g(t)| → vertical acceleration (signed; up bumps positive).
+
+    Why per-sample gravity (not a single resting estimate):
+      The new chair's backrest hanging pocket is non-rigid — under push load
+      the pocket settles into a different orientation than at rest. Today's
+      ART-202606240822.csv shows gravity on Z at rest, X during pushing,
+      Z again on stopping. A fixed axis assumption breaks. Tracking gravity
+      live makes the analysis mount-agnostic.
+
+    Backwards compatibility:
+      For old-chair caster-mount data (gravity steady on Y), the projection
+      degenerates to a_y − g — identical to the previous behaviour.
     """
-    a_y = accel['y'].values - GRAVITY
+    ax = accel['x'].values
+    ay = accel['y'].values
+    az = accel['z'].values
+
+    # 0.25 Hz cutoff: slow enough to reject ISO 2631-1 health-band terrain
+    # vibration (a few Hz upward), fast enough to follow the pocket's
+    # seconds-scale reorientation between rest and push.
+    g_cut_hz = 0.25
+    nyq = fs / 2.0
+    b, a = signal.butter(2, g_cut_hz / nyq, btype='low')
+    gx = signal.filtfilt(b, a, ax)
+    gy = signal.filtfilt(b, a, ay)
+    gz = signal.filtfilt(b, a, az)
+
+    g_mag = np.sqrt(gx * gx + gy * gy + gz * gz)
+    g_mag = np.where(g_mag < 1e-6, 1.0, g_mag)  # avoid /0 in free-fall
+
+    ux = gx / g_mag
+    uy = gy / g_mag
+    uz = gz / g_mag
+
+    proj = ax * ux + ay * uy + az * uz
+    return proj - g_mag
+
+
+def wk_weighted_vertical(accel: pd.DataFrame, fs: float,
+                          pocket_hp_hz: float = 0.4) -> np.ndarray:
+    """ISO 2631-1 Wk-weighted vertical acceleration on the gravity-projected
+    vertical component. Works for any phone mount — caster strap, backrest
+    hanging pocket, anything else. For OLD caster data this is identical to
+    the previous Y-axis behaviour (gravity sits on Y → projection picks Y).
+
+    Approximation: 4-pole Butterworth band-pass [pocket_hp_hz – 100 Hz].
+    Within ~2 dB of the exact ISO Wk transfer function across the band.
+
+    OSI-023 pocket high-pass:
+      - Old-chair caster mount: pocket_hp_hz = 0.4 (preserves legacy
+        behaviour; the rigid strap has no pendulum sway to remove).
+      - New-chair backrest hanging pocket: pocket_hp_hz = 2.0 (removes the
+        0.5–2 Hz pocket pendulum band; measured 2026-06-24 on real data,
+        peak at 1.07 Hz, 5.8× above terrain reference). Disclose in output.
+    """
+    a_v = compute_gravity_vertical(accel, fs)
     nyq = fs / 2.0
     hi_cut = min(100.0, nyq * 0.99)
-    b, a = signal.butter(4, [0.4 / nyq, hi_cut / nyq], btype='band')
-    return signal.filtfilt(b, a, a_y)
+    lo_cut = max(0.05, min(pocket_hp_hz, hi_cut * 0.5))
+    b, a = signal.butter(4, [lo_cut / nyq, hi_cut / nyq], btype='band')
+    return signal.filtfilt(b, a, a_v)
+
+
+def is_new_chair_recording(art_path) -> bool:
+    """True if the ART file is from the new Küschall + backrest hanging
+    pocket setup (2026-06-22 onwards). Used to gate the OSI-023 pocket
+    high-pass. Old-chair files keep the legacy 0.4 Hz low edge."""
+    import re
+    m = re.search(r'ART-(\d{12})', str(art_path))
+    if not m:
+        return False
+    try:
+        return int(m.group(1)) >= 202606220000
+    except Exception:
+        return False
 
 
 def split_sensors(df: pd.DataFrame):
@@ -774,7 +843,19 @@ def main():
         print("\nSpatial: no GPX found (skipped distance, mean-speed, ISO 8608)")
 
     # ── Wk-weighted vertical: ISO 2631-1 canonical input ────────────────────
-    a_w = wk_weighted_vertical(accel, fs)
+    # OSI-023: for new-chair (backrest hanging pocket) data, apply a 2.0 Hz
+    # high-pass to remove the pocket pendulum band (peak ~1.07 Hz, measured
+    # 2026-06-24). Old-chair caster data keeps the legacy 0.4 Hz low edge.
+    new_chair = is_new_chair_recording(args.csv)
+    pocket_hp = 2.0 if new_chair else 0.4
+    a_w = wk_weighted_vertical(accel, fs, pocket_hp_hz=pocket_hp)
+    if new_chair:
+        print(f"\nOSI-023 mount note: NEW chair (backrest hanging pocket)")
+        print(f"  Wk high-pass: {pocket_hp:.1f} Hz "
+              f"(removes pocket pendulum band; legacy was 0.4 Hz)")
+    else:
+        print(f"\nMount: OLD chair (caster strap) — Wk low edge "
+              f"{pocket_hp:.1f} Hz (legacy)")
     t_s_arr = accel['t_s'].to_numpy()
 
     # Per-technique calls.

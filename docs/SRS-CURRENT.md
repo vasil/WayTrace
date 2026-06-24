@@ -1,290 +1,283 @@
 # Open Streets Initiative — SRS-CURRENT
 # Single permanent workflow file. Always updated in place. Never replaced.
-# Last updated: 2026-06-19 UTC+2 (MERGED — pipeline order + dashboard/ISO 8608 unified)
+# Last updated: 2026-06-24 UTC+2 (hanging-pocket mounting dynamics: OSI-023)
 #
-# MERGE NOTE (2026-06-19): two SRS copies had forked on Drive — one with the
-# locked per-push pipeline order, one with the OSI-017 footer-dashboard task.
-# This file is the single reconciled truth: the pipeline-order version is the
-# base (it was the more current), and the dashboard work is unified into the
-# existing OSI-007-DASHBOARD-SPEC.md (now with an appended ISO 8608 method
-# section). OSI-017 is retired as a duplicate — see note in TODO. Nothing was
-# deleted; the dashboard detail lives in OSI-007-DASHBOARD-SPEC.md Appendix A.
+# MERGE NOTE (2026-06-19): two SRS copies had forked on Drive — reconciled
+# into one. Dashboard detail lives in OSI-007-DASHBOARD-SPEC.md (Appendix A
+# ISO 8608 method, Appendix B clarifications). OSI-017 retired as duplicate.
 
 ---
 
 ## FOR CLAUDE CODE
-Read THIS file. Execute IN PROGRESS task first. Update log when done.
-Move completed task to DONE. Move next TODO to IN PROGRESS.
-NEVER create a new SRS file — always update this one.
+Read THIS file top to bottom. Execute IN PROGRESS task first. Update log
+when done. Move completed task to DONE. Move next TODO to IN PROGRESS.
+NEVER create a new SRS file — always update THIS one in place.
 
 ---
 
 ## *** PIPELINE CORRECTION — MERGE FIRST, SYNC ONCE (2026-06-21) ***
-## This OVERRIDES the step order below where they conflict. Read this first.
+## This OVERRIDES the step order below where they conflict. Read first.
 
-PROBLEM observed (Vasil, 2026-06-21, reviewing yesterday's output):
-the pipeline processed each camera-split MOV as if it were its own push.
-The THIRD video started at the coffee break, the footer graph RESTARTED
-from zero there, and the minimap dot jumped back to home (the push start)
-instead of showing the true position. Each segment was synced and
-positioned independently — WRONG. A push is ONE continuous thing.
+PROBLEM (Vasil, 2026-06-21): the pipeline processed each camera-split MOV
+as its own push. The 3rd video started at the coffee break, the footer
+graph RESTARTED from zero, and the minimap dot jumped back to home. Each
+segment was synced/positioned independently — WRONG. A push is ONE thing.
 
 CORRECTED ORDER — assemble the whole push BEFORE processing:
+ A. MERGE VIDEO FIRST. Concatenate all MOVs of the push into ONE video,
+ in recording order. Only the FIRST segment carries the OSI-016 "Push
+ Off" clapper. The merged video is one continuous timeline.
+ B. MERGE ART FIRST. From 2026-06-21 Vasil does NOT stop WayTrace mid-push
+ — he PAUSES/RESUMES, so normally ONE ART file per push with a large
+ stationary GAP in the middle (the break — he wasn't moving, missing
+ motion rows there are CORRECT). If >1 ART file exists, merge into one
+ ART-MERGED-*.csv on the real timestamp timeline. Do NOT collapse or
+ delete the pause gap.
+ C. ONE GPX FOR THE PUSH. The single Strava GPX spans the whole push;
+ during the break it sits in one place (correct). The minimap dot
+ starts at the TRUE GPS START and moves continuously; never resets.
+ D. FIND THE CLAPPER OFFSET ONCE on the merged whole; one
+ video_to_art_offset for the entire push.
+ E. THEN PROCESS the whole push as one continuous timeline (YOLO + GDPR
+ blur + dashboard). Footer VDV graph is ONE continuous line; the dot is
+ always at the correct real-world position.
 
- A. MERGE VIDEO FIRST. Concatenate all camera-split MOVs of the push into
-    ONE video, in recording order. Only the FIRST segment carries the
-    OSI-016 "Push Off" clapper. The merged video is one continuous
-    timeline.
+NET RULE: one push = one merged video + one (merged) ART + one GPX, synced
+ONCE on the clapper, processed as a single continuous timeline. Old
+"concat-per-push" at the end is now effectively done at the START. Per-
+segment independent sync/positioning is retired.
 
- B. MERGE ART FIRST. From 2026-06-21 onward Vasil does NOT stop WayTrace
-    mid-push — he uses PAUSE / RESUME. So there is normally ONE ART file
-    per push already, containing a large GAP of rows in the middle where
-    he paused for the break (he was not moving, so missing motion rows
-    there are CORRECT and expected). If more than one ART file exists for
-    a push, merge them into one continuous ART-MERGED-*.csv on the real
-    timestamp timeline. Do NOT collapse or delete the pause gap — it is
-    real (stationary) and must stay.
+---
 
- C. ONE GPX FOR THE PUSH. The single Strava activity GPX spans the whole
-    push. During the break the GPX sits in ONE place (he wasn't moving) —
-    that is correct. The minimap dot starts at the TRUE GPS START of the
-    Strava activity and moves continuously along the route for the whole
-    push; it never resets per segment.
+## *** PHYSICAL SETUP — NEW CHAIR, AXIS MAPPING VERIFIED 2026-06-24 ***
+## Confirmed from test file ART-202606240047.csv (249 s: still, fwd, back,
+## left turn, right turn, wheelie, second hard wheelie). SUPERSEDES the old
+## "PHYSICAL SETUP — CONFIRMED" block (kept below as HISTORICAL).
 
- D. FIND THE CLAPPER OFFSET ONCE, on the merged whole. The single
-    chime near the start of the merged video anchors the entire push.
-    video_to_art_offset is computed once and applies across the whole
-    merged timeline (not per MOV).
+NEW CHAIR: Küschall K-Series rigid wheelchair, Spinergy wheels, rear
+anti-tip wheels fitted. Lighter than the old 15 kg chair — reweigh.
+ - Caster diameter: Vasil said "24 inch" — UNUSUAL for front casters;
+ MEASURE and confirm before trusting. CASTER_DIAMETER (new) = TO MEASURE.
 
- E. THEN PROCESS THE WHOLE PUSH as one continuous timeline: YOLO +
-    GDPR blur + dashboard run over the merged video against the merged
-    ART and the one GPX. Result: the footer VDV graph is ONE continuous
-    line from push start to push end (flat/again-continuous across the
-    pause gap, not restarted), and the dot is always at the correct
-    real-world position.
+NEW PHONE POSITION: in a NON-RIGID, HANGING POCKET on the wheelchair
+BACKREST, at SEAT / body sitting height (NOT caster height). LANDSCAPE,
+TOP EDGE of the phone to the RIGHT. Camera faces BACKWARD (good for Rear
+Window). Screen faces direction of travel (forward). Sampling vibration at
+the BODY's height — arguably MORE representative for ISO 2631-1 whole-body
+exposure (note for the pitch), BUT the pocket HANGS and can swing — see
+MOUNTING DYNAMICS below and OSI-023.
 
-NET RULE: one push = one merged video + one (merged) ART + one GPX,
-synced ONCE on the clapper, processed as a single continuous timeline.
-The old "CONCAT-PER-PUSH" at step 6 is therefore effectively done at
-the START now (step A), not the end. Per-segment independent sync/
-positioning is retired.
+*** MOUNTING DYNAMICS — HANGING POCKET (not a rigid frame mount) ***
+ Unlike the old caster strap (fairly rigidly coupled to the frame), the
+ backrest pocket is non-rigid and HANGS. It has its own pendulum sway and
+ resonance. So the sensor sees TWO things superimposed:
+ (a) the wanted signal — terrain + chair vibration, and
+ (b) PARASITIC pocket motion — the pocket swinging/oscillating on its own,
+ which can ring on after a bump and inflate or smear the reading.
+ PHYSICS: pocket sway is LOW frequency (pendulum, typically < ~2-3 Hz);
+ the ISO 2631-1 health-relevant terrain band is higher (a few Hz up to
+ tens of Hz). So they are largely SEPARABLE by frequency.
+ HONESTY CONSEQUENCE (state it in the pitch): a hanging-pocket reading is
+ a slightly noisier, less direct measure of frame vibration than the old
+ caster mount. It still captures the road and is closer to body-height
+ exposure, but the parasitic pocket motion MUST be filtered and that
+ filtering DISCLOSED — otherwise a critic could say the numbers are
+ inflated by the pocket swinging. Filter it AND say you filtered it.
+ (Note: the existing OSI-006b Wk band-pass 0.4–100 Hz already removes
+ some very-low-frequency sway, but the pocket pendulum frequency must be
+ measured from real rolling data and filtered explicitly — see OSI-023.)
 
-NEXT RUN PLAN (Vasil, 2026-06-21): when home, Vasil hands over a NEW data
-set — new videos, ONE new ART file (pause/resume, with a mid gap), and the
-ONE new Strava GPX. SYNC FIRST (steps A–D), confirm it, THEN start
-processing (~22:00), expected done by ~11:00 next morning.
+AXIS MAPPING — *** VERIFIED FROM DATA (2026-06-24) ***:
+ At rest, the gravity vector sits at: X=0.56, Y=8.75, Z=4.32 (|g|=9.80).
+ => VERTICAL IS STILL Y. (Y carries 89% of gravity at rest.)
+ The phone rides TILTED BACK ~26° (that is the Z=4.32 component — the
+ backrest recline angle), but Y remains the dominant up/down axis.
 
-IMPLEMENTATION (2026-06-21, this session): see tools/merge_push_inputs.sh
-(MOV concat + ART merge) and tools/vtx1_push_batch.sh (the push-level
-batch script). The old tools/vtx1_phase2_batch.sh is retained for
-reference but should not be used for new pushes.
+ CONFIRMED MAPPING (new chair, backrest pocket):
+ - Y_accel = VERTICAL (− g). SAME AXIS AS THE OLD RIG.
+ ==> waytrace_analysis.py needs NO vertical-axis change. ISO 8608 / VDV
+ / RMS keep using Y_accel − g. (Earlier hypothesis that vertical would
+ move to X was WRONG — the test disproved it. This is why we tested.)
+ - X_accel = the WHEELIE / tip-back axis. PROOF: during both wheelies the
+ gravity Y collapsed 8.75 → ~0.0 and shifted onto X (→9.17, then 9.65),
+ i.e. the chair rotating backward rotates the phone about X. So pitch
+ (wheelie) shows on the X channel.
+ - Z_accel = the remaining horizontal axis (forward/back vs lateral are
+ partly mixed across Z and the horizontal part of Y due to the ~26°
+ tilt). For wheelie/roughness this does not matter (vertical=Y is clean).
+ If forward-speed-from-IMU or lateral metrics are ever needed, fit the
+ tilt from the resting gravity vector and rotate to world frame first.
+
+ SAFETY EVENT IN THE TEST (2026-06-24): the SECOND wheelie was a real
+ BACKWARD TIP-OVER — the anti-tip wheels had been loosened earlier that
+ day by friends adjusting Vasil's centre of gravity and were not
+ re-hardened, so they rotated through instead of catching. Vasil fell
+ backward; the phone ended display-up. Signature: Y→0, big Z collapse,
+ 22.8 m/s² spike at t≈237.7 s. Vasil is OK; anti-tips since lowered
+ (smaller tip angle) and to be re-hardened by Kosta. (This signature is
+ a good labelled example for a future "backward tip / fall" detector.)
+
+TILT CORRECTION (recommended, not blocking): de-rotate the ~26° using the
+ resting gravity unit vector per recording for clean forward/lateral.
+ Current Y−g is already valid for vertical roughness.
+
+OPEN ITEMS (new chair):
+ [ ] Real caster diameter (24" claimed — verify).
+ [ ] New chair mass → new TOTAL_ROLLING_MASS_KG (was 78 w/ old 15 kg chair).
+ [x] Vertical axis CONFIRMED = Y (2026-06-24).
+ [x] Wheelie/pitch axis CONFIRMED = X.
+ [x] OSI-023 v1: gravity-projected vertical landed in waytrace_analysis.py
+     (commit pending) — mount-agnostic; degenerates to a_y−g on old data.
+ [x] OSI-023 v2: pocket pendulum HP at 2.0 Hz for new-chair files
+     (measured peak 1.07 Hz from K Push steady windows, 5.8× over terrain).
+ [ ] OSI-023 v3: per-50m ISO 8608 (Stage-2 #53) so the class reflects
+     the road, not the HP filter — needed to quote class on new-chair pushes.
+ [ ] Re-tune GEOMETRY_FACTOR for the backrest hanging-pocket mount.
+ [ ] Phone height from floor in the new pocket (for geometry).
+ [ ] Re-harden anti-tip wheels (Kosta) before outdoor pushing.
+
+## PHYSICAL SETUP — HISTORICAL (OLD CHAIR, pre-2026-06-22)
+## Use THIS mapping to analyse OLD ART files (all before 2026-06-22).
+Phone: RIGHT side, above front RIGHT caster. Portrait, vertical. Screen
+faces rider. Camera end UP. Fabric strap pocket (compliant, >50 Hz atten).
+Y_accel=VERTICAL, X_accel=FORWARD/BACK, Z_accel=LATERAL. Y_gyro=YAW,
+X_gyro=ROLL, Z_gyro=PITCH. ISO 8608 vertical = Y_accel − g.
+(NOTE: vertical axis Y is the SAME on the new chair — old and new files
+both analyse with Y as vertical. Differences: forward/lateral split, the
+~26° tilt, and the hanging-pocket parasitic motion (OSI-023).)
 
 ---
 
 ## FILE NAMING CONVENTION
-ART-YYYYMMDDHHMM.csv — sensor data
-ART-MERGED-YYYYMMDDHHMM.csv — merged multi-session sensor data
-WT-YYYYMMDDHHMM.apk — WayTrace app build
-SRS-CURRENT.md — this file, permanent
-RW-YYYYMMDDHHMM.mp4 — Rear Window video (Akaso V50 X, raw)
-RW-YYYYMMDDHHMM-blurred.mp4 — GDPR processed (faces + plates blurred)
-RW-YYYYMMDDHHMM-final.mp4 — single per-segment annotated output
-RW-PUSH-YYYYMMDDHHMM-final.mp4 — one-file-per-push concat for YouTube upload
-ANL-YYYYMMDDHHMM.txt — Analysis report
-GPS-YYYYMMDDHHMM.gpx — GPS track from Strava
-LOC-YYYYMMDDHHMM.png/.txt — Bad-spots map + ranked report
-RQM-YYYYMMDDHHMM.png — Road-quality colored polyline + top-N hits
-BSV-YYYYMMDDHHMM.mp4 — Beat-Synced Video output
+ART-YYYYMMDDHHMM.csv — sensor data | ART-MERGED-YYYYMMDDHHMM.csv — merged
+WT-YYYYMMDDHHMM.apk — app build | SRS-CURRENT.md — this file, permanent
+RW-YYYYMMDDHHMM.mp4 — raw Rear Window video (Akaso V50 X)
+RW-YYYYMMDDHHMM-blurred.mp4 — GDPR processed | -final.mp4 — annotated
+RW-PUSH-YYYYMMDDHHMM-final.mp4 — one-file-per-push concat for upload
+ANL-YYYYMMDDHHMM.txt — Analysis report | GPS-YYYYMMDDHHMM.gpx — Strava track
+LOC-*.png/.txt — bad-spots map | RQM-*.png — road-quality polyline
+BSV-*.mp4 — Beat-Synced Video
 
 ---
 
 ## MACHINES
-VT — development: Android builds, Claude Code, sensor analysis
-VT-X1 (IP 10.0.0.110, DHCP — can move) — GPU: video processing, YOLO, YouTube upload
-
----
+VT — development: Android builds, Claude Code, sensor analysis.
+VT-X1 (IP 10.0.0.110, DHCP) — GPU: video processing, YOLO, YouTube upload.
 
 ## PROJECT
-App: WayTrace | Package: com.vasil.sensorlogger
-Language: Kotlin | Min SDK 26 | Target SDK 34
-GitHub: github.com/vasil/WayTrace
-Phone: Xiaomi — 120–125 Hz sustained delivery (detected per-recording)
+App: WayTrace | Package: com.vasil.sensorlogger | Kotlin | Min SDK 26 |
+Target SDK 34 | GitHub: github.com/vasil/WayTrace | Phone: Xiaomi —
+120–125 Hz sustained (detected per-recording).
 
 ---
 
-## PHYSICAL SETUP — CONFIRMED
-Phone: RIGHT side of wheelchair, above front RIGHT caster wheel.
-Portrait orientation, vertical. Screen faces rider. Camera end UP.
-Mounting: fabric strap pocket — COMPLIANT mount (attenuates >50 Hz).
-Y_accel = VERTICAL | X_accel = FORWARD/BACKWARD | Z_accel = LATERAL
-Y_gyro = YAW | X_gyro = ROLL (danger) | Z_gyro = PITCH (wheelie)
-NOTE: ISO 8608 vertical acceleration = Y_accel − g on this rig (NOT phone Z;
- Z is lateral here). Generic ISO "Z-axis" = world-vertical = Y_accel here.
-
----
-
-## WHEELCHAIR GEOMETRY — PARTIALLY CONFIRMED
-CASTER_DIAMETER_CM = 10.16 # 4 inches solid rubber — CONFIRMED
-REAR_WHEEL_DIAMETER_CM = 60.0 # outer tyre — CONFIRMED
-REAR_WHEEL_PRESSURE_BAR = 8 # pneumatic — CONFIRMED
-WHEELBASE_LONGITUDINAL_CM = 32.0 # rear axle → caster axle — CONFIRMED
-CASTER_TRAIL_CM = 5.0 # steering pin → contact — CONFIRMED
-PHONE_HEIGHT_CM = 35.0 # floor to phone center — CONFIRMED
-PHONE_FORWARD_OFFSET_CM = 15.0 # phone ahead of caster — CONFIRMED
-PHONE_LATERAL_OFFSET_CM = 3.0 # phone outward from centerline — CONFIRMED
- PHONE_MOUNT_TYPE = "fabric_strap_pocket" # compliant
+## WHEELCHAIR GEOMETRY — PARTIALLY CONFIRMED (OLD CHAIR — new chair TBD)
+CASTER_DIAMETER_CM = 10.16 # old chair, 4" solid — CONFIRMED (new = TO MEASURE)
+REAR_WHEEL_DIAMETER_CM = 60.0 # CONFIRMED (old)
+REAR_WHEEL_PRESSURE_BAR = 8 # CONFIRMED (old)
+WHEELBASE_LONGITUDINAL_CM = 32.0 ; CASTER_TRAIL_CM = 5.0 # old, CONFIRMED
+PHONE_HEIGHT_CM = 35.0 # OLD caster mount — NEW pocket height TO MEASURE
+PHONE_FORWARD_OFFSET_CM = 15.0 ; PHONE_LATERAL_OFFSET_CM = 3.0 # OLD
 RIDER_WEIGHT_KG = 63.0 # CONFIRMED
-CHAIR_WEIGHT_KG = 15.0 # old wheelchair — CONFIRMED
-TOTAL_ROLLING_MASS_KG = 78.0 # rider + chair
+CHAIR_WEIGHT_KG = 15.0 # OLD chair — new Küschall lighter, TO REWEIGH
+TOTAL_ROLLING_MASS_KG = 78.0 # old (rider+old chair); update for new chair
 PNEUMATIC_FACTOR = 1.47 # rear wheel absorption [REF-005]
-GEOMETRY_FACTOR_CASTER_COMPLIANT = 2.0 # rider-exposure overstate factor for
- # fabric-strap pocket over caster
+GEOMETRY_FACTOR_CASTER_COMPLIANT = 2.0 # OLD caster-fork mount; new hanging
+ # backrest pocket needs its own factor (TO RE-TUNE, see OSI-023)
 # Remaining: seat height, track widths, weight balance, wheelie ref — TO MEASURE
-# NOTE: new Küschall with Spinergy wheels being assembled — lighter, update when ready.
 
 ---
 
 ## SCIENTIFIC REFERENCES
-REF-001 to REF-010 — see previous SRS versions for full citations.
-Key: ISO 2631-1 (REF-007), ASTM E3028-16 WPRI (REF-008),
-Garcia-Mendez 2013 (REF-009), RFC OSI-ORIGINAL (REF-010).
+REF-001..010 — see prior SRS. Key: ISO 2631-1 (REF-007), ASTM E3028-16
+WPRI (REF-008), Garcia-Mendez 2013 (REF-009), RFC OSI-ORIGINAL (REF-010).
 REF-011: ISO 8608 road-roughness classes A–H, Gd(n₀) at n₀=0.1 cyc/m.
 
----
-
 ## CSV FORMAT — v3
-Columns: timestamp_ms, sensor, x, y, z, rotvec_w
-Rate: 120–125 Hz (per-device, detected at runtime) | All event detection offline in Python.
-Marker rows (sensor=pinpoint or sensor=sync_pulse) carry the counter in col 3 and zeros in cols 4-5.
-
----
+Columns: timestamp_ms, sensor, x, y, z, rotvec_w. Rate 120–125 Hz
+(per-device, runtime-detected). All event detection offline in Python.
+Marker rows (pinpoint / sync_pulse) carry counter in col 3, zeros in 4-5.
+Sensors present: accel, gravity, gyro, mag, rotvec.
 
 ## UI COLOR LANGUAGE — LOCKED
-START: GREY+GREEN | PAUSE: GREEN+ORANGE | RESUME: ORANGE+GREEN
-STOP: RED+WHITE | PIN: BLUE+WHITE
-SYNC: CYAN+BLACK (clapper button — see OSI-016)
-
----
+START GREY+GREEN | PAUSE GREEN+ORANGE | RESUME ORANGE+GREEN | STOP RED+WHITE
+PIN BLUE+WHITE | SYNC CYAN+BLACK (clapper — OSI-016).
 
 ## EXTERNAL OUTREACH — STRAVA FEATURE REQUEST
-Date: 2026-06-08, refreshed 2026-06-17 after OSI-006b.
-Status: DRAFT v2 at docs/strava-feature-request-2026-06-17.md (in OSI repo).
-Proposed: Road Surface Quality map type colored by ISO 2631-1 Wk-weighted
-vertical RMS in sliding windows.
-
----
+DRAFT v2 at docs/strava-feature-request-2026-06-17.md. Proposed: Road
+Surface Quality map type coloured by ISO 2631-1 Wk-weighted vertical RMS.
 
 ## FUNDING — POTENTIAL TARGETS
-Date added: 2026-06-08. Status: TO BE DRAFTED — one-page summary needed first.
-Targets: EDF, Mozilla, Wellcome, OSM Foundation, Knight, NMK Ministry, RESNA.
+TO BE DRAFTED (one-page summary first). Targets: EDF, Mozilla, Wellcome,
+OSM Foundation, Knight, NMK Ministry, RESNA.
 
 ---
 
 ## PER-PUSH PIPELINE — LOCKED ORDER (2026-06-19)
+## Front-superseded by MERGE-FIRST (above): assemble one merged video +
+## one ART + one GPX and sync ONCE before these stages.
 
-The canonical processing pipeline for a single Rear Window push, from
-the moment Vasil walks in with the SD card to the moment a video is
-ready to upload. Each stage feeds the next; nothing skips.
+ 1. AUTO-FETCH on SD insert: mount, copy MOVs, verify, wipe SD; auto-fetch
+ ART(s) from gdrive2 + Strava GPX via waytrace_strava.py. Then MERGE
+ MOVs→one video and (if needed) ART→one ART-MERGED before sync.
+ 2. SYNC ART↔VIDEO (chime-locked): scan MERGED audio with
+ tools/sync_chime_detect.py for the Push Off chime; match to first
+ sync_pulse; compute ONE offset for the push.
+ 3. YOLO DETECTION PASS: boxes for car/truck/motorcycle/bus/person/bicycle/
+ mobility-aid/stroller/obstacles. Identify BEFORE blurring. Assign STABLE
+ TRACK IDs (for temporal blur persistence AND OSI-022 de-dup).
+ 4. TARGETED GDPR BLUR ("look harder inside the box, blur when uncertain"):
+ focused low-threshold plate detect inside each vehicle box; focused face
+ detect inside each person box. SAFETY BACKSTOP: no plate found → blur
+ plate-likely lower zone anyway; forward-facing no face → blur head region
+ anyway; person from behind = fine. Over-blur costs nothing; under-blur is
+ the violation. TEMPORAL PERSISTENCE (OSI-021, hard req): blur bound to the
+ TRACK across its whole life, through detector misses, padded before/after
+ — no blinking. CONFIRMED WORKING 2026-06-21 (RW-200028-final.mp4: no
+ flicker, 176 backstop cases hold, faces blurred).
+ 5. DASHBOARD HUD OVERLAY per OSI-007-DASHBOARD-SPEC.md: title+speed (upper
+ left), route map+dot (upper right, borderline only), footer VDV trace +
+ coloured background + VDV threshold line. MERGE-FIRST → footer is ONE
+ continuous line; dot rides one GPX from true start. ISO 8608 class/"X→Y"
+ flash uses DASHBOARD-SPEC Appendix A (50 m windows, time→space, FFT PSD,
+ S_z=C·(Ω/Ω₀)^-2 fit). OSI-022 counter renders here too.
+ 6. CONCAT (now effectively done at START as MERGE): output one
+ RW-PUSH-YYYYMMDDHHMM-final.mp4 per push.
+ 7. UPLOAD TO YOUTUBE (gated): youtube_upload.py, privacy=unlisted, behind
+ UPLOAD_TO_YOUTUBE=1 — stays OFF until GDPR blur is provably airtight.
 
- 1. AUTO-FETCH on SD insert
- Trigger: SD card inserted into VT-X1.
- - Mount, copy MOVs into ~/Videos/VIDEO/, byte-verify, wipe SD.
- - Auto-download the matching ART CSV(s) from gdrive2 (phone-side
- waytrace upload), and the GPX of the matching Strava activity
- via waytrace_strava.py.
- - Zero human steps after card insertion.
+PHILOSOPHY: merge into one timeline first, sync once, then process.
+Identify before redact. Lock sync before dashboard. Never re-encode after
+concat (-c copy only). Upload is the final explicit gate.
 
- 2. SYNC ART ↔ VIDEO (chime-locked)
- - For each MOV, scan its audio track with tools/sync_chime_detect.py
- for the OSI-016 "Push Off" 5-note chime (C5-E5-G5-A5-C6 octave-up).
- - Match each detected chime to the corresponding sync_pulse row in
- the ART CSV by ordinal (first chime = first sync_pulse, etc.).
- - Compute video_to_art_offset_seconds per MOV; sanity-check that
- the start-of-MOV and end-of-MOV chime offsets agree.
- - Persist the offsets as a sidecar JSON next to each MOV.
+---
 
- 3. YOLO DETECTION PASS (identify before blurring)
- - Run YOLO on the (downscaled 1080p) video. Save bounding boxes
- for every car, truck, motorcycle, bus, person, bicycle,
- mobility-aid user, stroller, large/small obstacle.
- - These boxes are the substrate for both the GDPR blur (step 4)
- AND the color-coded annotation overlay carried into step 5.
- - Identification comes FIRST so step 4 can search inside each box
- with high prior, instead of full-frame.
- - TRACKING (required for step 4 temporal persistence): assign a
- STABLE TRACK ID to each vehicle and each person across frames
- (IoU/centroid tracker or built-in YOLO tracker). The plate/face
- blur in step 4 is applied per TRACK across its whole lifespan,
- not per isolated frame. See OSI-021 "temporal blur persistence".
+## DASHBOARD QA BUNDLE (2026-06-21) — fix before next full batch
+(from Vasil's VLC review of RW-200028-final.mp4)
 
- 4. TARGETED GDPR BLUR ("look harder inside the box, blur when uncertain")
- - VEHICLE boxes (car/truck/motorcycle/bus/van): run a second,
- focused plate detector inside each box at a LOWER threshold than
- full-frame. Crop-priored detection catches plates the full-frame
- pass misses.
- - PERSON boxes: run a focused face detector inside each box at a
- lower threshold. Catches small/distant/edge faces.
- - SAFETY BACKSTOP (the inviolable rule, per Vasil's axiom "every
- car has a plate, every person has a face on the head"):
- • Vehicle box with NO plate found → blur the plate-likely
- zone (lower portion of the box) anyway.
- • Person box facing the camera with NO face found → blur the
- head region (upper portion of the box) anyway.
- • A person seen from behind has no face to blur — that is fine.
- • Over-blurring costs nothing; under-blurring is the violation.
- - TEMPORAL PERSISTENCE (NO BLINKING — see OSI-021, hard requirement):
- once a plate/face is blurred on a tracked object in ANY frame, it
- stays blurred for the ENTIRE track — through every frame the object
- is on screen, including frames where the detector missed it, and
- with padding before the first and after the last detection. The
- same car's plate is never readable for even one frame.
- - This stage is OSI-016 GDPR hardening, implementing what
- REAR-WINDOW-NEXT-TASKS.md priority 1 specifies. It REPLACES
- osi007_final.py's current single-pass blur-and-box.
-
- 5. DASHBOARD HUD OVERLAY
- - Composit the OSI-007 Phase-2 dashboard per
- OSI-007-DASHBOARD-SPEC.md on top of the blurred+boxed frames.
- - HUD layers: push title + speed (upper-left, no bg), route map
- with current-position dot (upper-right, borderline only),
- 30-min rolling Wk-weighted RMS trace with current-roughness
- coloured background + ISO 2631-1 threshold line (footer).
- - ISO 8608 class line / "X → Y" flash uses the rigorous method now
- in OSI-007-DASHBOARD-SPEC.md APPENDIX A (50 m windows, time→space,
- FFT PSD, S_z=C·(Ω/Ω₀)^-2 fit, class lookup). Computed offline in
- waytrace_analysis.py; the dashboard reads per-window output.
- - Inputs: dashboard takes the blurred-boxed MP4 from step 4, the
- ART CSV, the GPX, the Strava push title, and the offset from
- step 2.
-
- 6. CONCAT-PER-PUSH
- - Lossless ffmpeg -f concat -c copy of all per-segment
- RW-*-final.mp4 of this push into ONE
- RW-PUSH-YYYYMMDDHHMM-final.mp4.
- - The Strava activity is the canonical session boundary; the
- multiple camera-split MOVs and the multiple ART files of a
- single push are stitched back into one upload artefact.
-
- 7. (OPTIONAL) UPLOAD TO YOUTUBE (gated)
- - tools/youtube_upload.py uploads the concat from step 6 as
- privacy=unlisted, description auto-built from osi007 JSON
- counts.
- - GATED behind UPLOAD_TO_YOUTUBE=1 env var — stays OFF until
- step 4 (GDPR blur) is provably airtight, per the SRS rule
- "NO video goes to YouTube until ALL plates are confirmed
- blurred." Today's first run keeps the gate closed and the
- per-segment + concat outputs sit locally for manual review.
-
- PHILOSOPHY OF THE ORDER
-- Identify (YOLO) BEFORE you redact (blur). Knowing what you're
- redacting makes the redaction better, and the YOLO boxes carry
- forward into the annotation overlay so the work isn't redundant.
-- Lock the ART-video sync BEFORE the dashboard step. Anything the
- HUD reports has to be true for the exact pixel underneath it.
-- The concat is the LAST step before upload — never re-encode after
- it, only ever -c copy.
-- Upload is the FINAL gate and stays explicit; a flipped switch, not
- a default.
+QA-0. PREVIEW FRAMES FIRST — no full batch until previews approved.
+ Render static 1920×1080 PNGs of the dashboard in EVERY visual state from
+ REAL data at different timestamps, all four HUD layers composited as the
+ pipeline produces them. Cover ALL visuals/texts/colours — do NOT cap the
+ PNG count: footer GREEN/AMBER/RED; ISO 8608 class A,B,C,D… in the speed
+ colour; multi-person frame with confidences; vehicle frame with
+ confidence; a NO-detections frame; (when OSI-022 lands) ROAD vs PAVEMENT.
+ Save to previews/. — Vasil: "do not count how many PNGs, let it be all
+ the different visuals with all the different texts and colours."
+QA-1. FOOTER METRIC = VDV (decided). Trace, label AND threshold all VDV
+ (ISO 2631-1, Wk-weighted) — NOT plain RMS. RMS may stay as background
+ tint only. Update DASHBOARD-SPEC LAYER 4.
+QA-2. THRESHOLD LINE COLOUR distinct from the VDV trace (e.g. dashed bright
+ cyan/magenta), labelled with the VDV high-risk value.
+QA-3. THRESHOLD VALUE in VDV units (m/s^1.75), not the old RMS ~1.15 m/s².
+QA-4. ENCODING BUG: "m/s??" → fix UTF-8/font so ² and ^1.75 render (or
+ render exponent as plain text "m/s^1.75").
+QA-5. FOOTER FONT too small — increase significantly.
+QA-6. FOOTER LAYOUT: VDV trace should fill the band's vertical space.
+QA-7. SPEED READOUT colour changes on ISO 8608 class change (title never
+ changes colour — correct).
+QA-8. TITLE/SPEED share one LEFT anchor.
+QA-9. MINIMAP BORDER → DARK GRAY, borderline-only, no fill.
 
 ---
 
@@ -292,257 +285,155 @@ ready to upload. Each stage feeds the next; nothing skips.
 
 ### IN PROGRESS
 
-**OSI-007 | Rear Window Video Pipeline — Phase-2 batch running**
- Priority: HIGH. Machine: VT-X1 (10.0.0.110). Updated: 2026-06-19.
- Re-run of the per-segment pipeline on the 8 MOVs of the 2026-06-18
- Rear Window Push, with the dashboard HUD step now active. First
- attempt 2026-06-19 ran 11 h then silently failed every dashboard
- step (pandas missing in the osi007 conda env — fixed by `pip install
- pandas` and a PRE-FLIGHT import check in the batch script). Second
- attempt launched 11:57 today, ETA finish ~23:00. The concat-per-push
- (step 6) and the optional gated YouTube upload (step 7) are wired
- into the batch but the YouTube gate is OFF this run — manual review
- on the concat first.
- Full dashboard visual spec: OSI-007-DASHBOARD-SPEC.md (4 layers) +
- APPENDIX A (ISO 8608 coefficient-C method behind the class line).
- KNOWN ISSUE (2026-06-19, from Vasil's review of an earlier output):
- license-plate blur BLINKS — a plate is blurred in some frames and
- readable in others on the SAME car. This is a GDPR leak and is fixed
- by the temporal-persistence requirement added to OSI-021 below. Do
- NOT consider OSI-007 publish-ready until plate/face blur is blink-free.
+**OSI-007 | Rear Window Video Pipeline — Phase-2 dashboard QA + MERGE-FIRST**
+ HIGH. VT-X1. The 2026-06-18 push processed end-to-end; GDPR blur CONFIRMED
+ working (no flicker). Remaining: (1) MERGE-FIRST correction; (2) DASHBOARD
+ QA BUNDLE via PREVIEW FRAMES FIRST then a batch. YouTube gate OFF until
+ OSI-021 temporal persistence formally accepted. Spec: OSI-007-DASHBOARD-
+ SPEC.md (4 layers + Appendix A ISO 8608 + Appendix B clarifications).
 
-**OSI-016 | WayTrace SYNC clapper — first field run completed, working**
- Status: 2026-06-18 push used the OSI-016 SYNC clapper in the field
- for the first time. 4 chimes recorded across 8 camera-split MOVs,
- matching the 4 sync_pulse rows in the 2 ART CSVs (one clap right
- after START, one right before STOP, per the confirmed routine).
- tools/sync_chime_detect.py (template cross-correlation against the
- bundled chime WAV, NCC threshold 0.20) finds all 4 cleanly with no
- false positives. Per-MOV video↔ART offsets derived; phone-to-camera
- START delta is ~7-10 s per session (Vasil presses phone START, then
- camera). Field acceptance test "real-world audibility" PASSED.
- Cooldown + button-size bug-fix APK (WT-202606181442.apk) installed
- and behaving — no cooldown violations seen.
- (Earlier in-room retest 2026-06-18 15:11 also confirmed the fixes:
- ART-202606181509.csv had sync_pulse deltas 15908 ms and 16837 ms,
- both > 10 s cooldown; button equal-width and label readable.)
-
----
+**OSI-016 | WayTrace SYNC clapper — field-proven, working**
+ 2026-06-18 first field run: 4 chimes across 8 MOVs matched 4 sync_pulse
+ rows. Audibility PASSED. Bug-fix APK WT-202606181442.apk behaving.
+ FIELD METHOD: PAUSE/RESUME at breaks (one ART with stationary gap); one
+ SYNC after START, one before STOP. NEW CHAIR: re-verify chime capture from
+ the backrest hanging-pocket position on the first real new-chair push.
 
 ### TODO
 
+**OSI-023 | Hanging-pocket parasitic-motion filtering (new-chair mount)**
+ Added 2026-06-24. HIGH for new-chair data validity (BLOCKS trusting
+ new-chair roughness numbers until done).
+ PROBLEM: the backrest pocket is non-rigid and HANGS; it adds its own
+ pendulum sway + resonance on top of the real terrain/chair vibration.
+ Without removing it, VDV/roughness on the new chair can be inflated or
+ smeared (the pocket rings on after a bump).
+ METHOD:
+ - From a real rolling segment (not the bench test), estimate the pocket
+ PENDULUM frequency/band via FFT/PSD of the vertical (Y−g) signal during
+ steady pushing on a KNOWN-smooth surface — the residual low-frequency
+ peak that is NOT terrain is the pocket sway.
+ - Add an explicit HIGH-PASS (or notch at the pendulum band) BEFORE the
+ Wk weighting / VDV / ISO 8608 stages, tuned to remove that band while
+ preserving the ISO 2631-1 health band (a few Hz to tens of Hz).
+ - Cross-check against the gyro/gravity: pure pocket sway shows as slow
+ orientation wobble with little true translational road content; use it
+ to validate the cutoff.
+ - Re-tune GEOMETRY_FACTOR for the hanging-pocket mount (the old caster
+ 2.0 does not apply); document the new factor with its justification.
+ - DISCLOSE the filtering in outputs/pitch ("parasitic pocket motion
+ removed by high-pass at X Hz") — honesty guard.
+ ACCEPTANCE: on a known-smooth surface the post-filter VDV/roughness reads
+ LOW (class A/B) as it should; a known-rough surface still reads high; the
+ pocket-sway peak is gone from the post-filter PSD; same input → same
+ output.
+
+**OSI-022 | Forced-Road Counter — HUD live count + post-run advocacy report**
+ HIGH (advocacy core). Vasil is legally a pedestrian; pushing on the
+ carriageway is never by choice — either no pavement, or pavement above the
+ ISO 2631-1 uncomfortable threshold. Count every vehicle and person on that
+ carriageway as evidence.
+ TIER 1 (YOLO COCO now): car/truck/motorcycle/bus/van = VEHICLES; person =
+ PEDESTRIAN ON ROAD. TIER 2 (needs REAR-WINDOW P2): cane/crutch/walker,
+ stroller/pram, other wheelchair/scooter = VULNERABLE ROAD USERS.
+ COUNT ONLY on carriageway segments (P4 later; proxy until then: RMS above
+ ISO threshold + GPS on a known road). DE-DUP by YOLO track ID.
+ HUD (upper-left, below speed): "ROAD CAR 12 PERSON 4" (+ "MOBILITY 2
+ STROLLER 1" at Tier 2). On pavement (future P4) counter PAUSES → PAVEMENT.
+ POST-RUN FORCED ROAD EXPOSURE SUMMARY appended to ANL-*.txt — copy-paste
+ ready for an OSI-LTR letter. ACCEPTANCE: counter updates; counts match
+ spot-check; report in every ANL; no double-counting within a segment.
+
 **OSI-021 | Refactor osi007_final into the new per-push pipeline order**
- Source: the PER-PUSH PIPELINE section, locked 2026-06-19.
- Status (2026-06-20): **CODE COMPLETE, batch redeploying.** Vasil
- greenlit the refactor (out of order vs. the original "after batch
- review" plan) once he saw the blinking GDPR leak in the 2026-06-19
- osi007_final.py output. The 2026-06-19 push batch was stopped mid-
- first-MOV so the new pipeline could replace osi007_final.py before
- anything else gets blurred-with-blinks. Implementation summary:
-
-   tools/osi007_detect.py (NEW, 169 lines):
-     - Ultralytics YOLO obj.track() with the default BotSort tracker
-       for stable per-object IDs across frames.
-     - For each tracked vehicle (car/truck/bus/motorcycle): crops the
-       bbox and runs the plate detector inside it at LOWER conf 0.10
-       (vs. the old full-frame 0.15); skips the dashcam-timestamp
-       upper-left zone (heuristic kept from osi007_final.py).
-     - For each tracked person: crops and runs the face detector at
-       conf 0.20 (vs. 0.30).
-     - Emits a per-track JSON sidecar: track_id → cls, frames[],
-       bboxes[], confs[], plates[], faces[] (parallel arrays).
-
-   tools/osi007_blur.py (NEW, 280 lines):
-     - Reads the detect JSON + the 1080p MP4 source.
-     - For each track:
-        * If any plate detection exists on the track: expresses each
-          detection as a position RELATIVE to the vehicle bbox at
-          detection time (rx1, ry1, rx2, ry2 in [0,1]), linearly
-          interpolates the relative box between consecutive
-          detections, projects onto the CURRENT vehicle bbox at each
-          frame — so the blur scales with the car driving away and
-          tracks it sideways. Pads ±round(0.5 × fps) frames around
-          first/last detection.
-        * If a vehicle is tracked but a plate is NEVER detected:
-          SAFETY BACKSTOP — blurs the lower 60–100 % of the vehicle
-          bbox, inset 10 % from each side, for the WHOLE track.
-        * Same logic for faces on person tracks. Backstop = upper
-          25 % of person bbox, inset 15 % each side (head region).
-     - Then composites the SRS colored YOLO boxes on top (RED vehicles,
-       GREEN cyclists/persons, BLUE small obstacles) — taking the
-       per-frame bbox from the detect sidecar so the boxes don't
-       duplicate detection work.
-     - Mux audio from source. Write counts JSON sidecar with track-
-       level breakdowns (plates_with_real_detection vs.
-       plates_backstop_only, etc.) for review.
-
-   tools/vtx1_phase2_batch.sh:
-     - Step 2 split into [2/4] detect + [3/4] blur; step 4 is now [4/4]
-       dashboard; gated YouTube upload renumbered [5/5].
-     - PRE-FLIGHT check extended to include ultralytics.
-
- ACCEPTANCE (per Vasil's "removed, absolutely"): on the 2026-06-20 batch
- output, frame-by-frame review must show ZERO frames anywhere with a
- readable plate or identifiable forward-facing face on any tracked
- object — including during detector dropouts. Only after this passes
- may UPLOAD_TO_YOUTUBE=1 be flipped.
-
- Original problem statement, kept for context:
- Today's osi007_final.py does plate/face/object detection in one pass
- and writes the consolidated output directly. The new order separates
- these into independent stages so step 4's GDPR blur can be priored
- on step 3's YOLO boxes (cropped low-threshold detection inside each
- vehicle/person box), and so the boxes feed forward into the
- annotation overlay without redundant detection.
-
+ (+ MERGE-FIRST). TODO → IN PROGRESS once current batch reviewed & Vasil
+ greenlights. Split osi007_final.py into osi007_detect.py (emits track IDs)
+ + osi007_blur.py (temporal persistence); add a merge stage at the front;
+ re-wire tools/vtx1_phase2_batch.sh; osi007_dashboard.py takes the post-blur
+ MERGED MP4.
  *** HARD REQUIREMENT — TEMPORAL BLUR PERSISTENCE (NO BLINKING) ***
- (Added 2026-06-19 from Vasil's review. This is GDPR-critical and
- non-negotiable; the YouTube gate stays OFF until it passes.)
- PROBLEM observed in current output: the plate blur is computed
- PER FRAME independently. When the plate detector misses for a frame
- or two, the blur drops and the plate becomes readable, then blurs
- again — it BLINKS. Even a single readable frame is a privacy leak;
- the number got out.
- REQUIRED behaviour: blur is bound to the TRACKED OBJECT, not the
- frame. Concretely:
- - Use the stable per-object track IDs from step 3 (YOLO tracking).
- - For each tracked vehicle, maintain a plate-region estimate. Once a
- plate is detected anywhere on that track, BLUR THAT REGION IN EVERY
- FRAME of the track — including frames where detection failed, by
- carrying the last known plate box and/or interpolating between
- detections, and tracking the region with the car's motion.
- - PAD the blur in time: start blurring N frames BEFORE the first
- detection and continue N frames AFTER the last (e.g. N ≈ 0.5 s
- worth of frames), so onset/loss of detection is never visible.
- - If a vehicle is tracked but a plate is NEVER detected, fall back to
- the SAFETY BACKSTOP (blur the plate-likely lower zone of the box)
- for the whole track.
- - Same temporal persistence applies to FACES on person tracks: once
- blurred on a track, stay blurred across the track (a person turning
- away briefly must not flash their face); forward-facing-with-no-
- detection still gets the head-region backstop.
- - Net rule, in Vasil's words: the same car / same yellow mark keeps
- its plate blurred before, during, and after — the numbers are
- removed absolutely and never shown.
- ACCEPTANCE (temporal persistence): frame-by-frame review of the
- 2026-06-18 push output shows ZERO frames anywhere with a readable
- plate or an identifiable forward-facing face on any tracked object —
- including during detector dropouts. No blinking. Only then may
- UPLOAD_TO_YOUTUBE be set.
+ GDPR-critical; YouTube gate OFF until it passes. Blur bound to the TRACK
+ not the frame: once detected on a track, blur EVERY frame of the track
+ (carry/interpolate through misses, move with the car), pad ~0.5 s before
+ first and after last; never-detected vehicle → backstop lower-zone blur;
+ faces same on person tracks. ACCEPTANCE: frame-by-frame review shows ZERO
+ readable plates / identifiable forward-facing faces on any track, incl.
+ dropouts. Only then may UPLOAD_TO_YOUTUBE be set. (2026-06-21 VLC review
+ shows this working; keep formal frame-by-frame acceptance as the gate.)
 
- Touches: app/src/main/res/raw/* (no change), osi007_final.py (split
- into osi007_detect.py + osi007_blur.py, both producing sidecars the
- dashboard step consumes; osi007_detect.py now also emits per-object
- track IDs; osi007_blur.py consumes tracks for temporal persistence),
- tools/vtx1_phase2_batch.sh (re-wire to call the two new stages in
- order), tools/osi007_dashboard.py (no change — already takes the
- post-blur MP4).
+**OSI-011 | Stationary suppression** — min 1 row/sec stationary; full 120 Hz motion.
+**OSI-012 | Beat-synced video** — waytrace_beatsync.py (librosa+MoviePy) → BSV-*.mp4.
+**OSI-014 | Funding one-page summary** — see FUNDING.
+**OSI-015 | Strava feature request email** — to developers@strava.com / Community Hub.
 
- Acceptance: same visual quality of boxes and blurs as today, plus
- ZERO unblurred plates and ZERO unblurred forward-facing faces on
- spot-checks of the 2026-06-18 push output (per the temporal-
- persistence acceptance above). Then the YouTube upload gate
- (UPLOAD_TO_YOUTUBE=1) can be flipped.
+**REAR-WINDOW-NEXT-TASKS** (P1 absorbed into OSI-021):
+ P2 Wider non-COCO model (bins, dumpsters, mobility aids, strollers), drop
+ "bench". Enables OSI-022 Tier 2.
+ P3 Vibration border overlay — ABSORBED into the OSI-007 dashboard footer.
+ P4 Road-vs-pavement segmentation + map-matching — proper basis for OSI-022.
 
-**OSI-011 | Stationary suppression**
- Min 1 row/sec stationary. Full 120 Hz motion.
-
-**OSI-012 | Beat-synced video — waytrace_beatsync.py (VT-X1)**
- librosa + MoviePy. BSV-YYYYMMDDHHMM.mp4.
-
-**OSI-014 | Funding application — one-page project summary**
- Draft for international funding bodies; see FUNDING section.
-
-**OSI-015 | Strava feature request email**
- Send to developers@strava.com and/or Strava Community Hub.
-
-**REAR-WINDOW-NEXT-TASKS** (3 remaining, P1 absorbed into OSI-021 above):
- P2 Wider non-COCO detection model (bins, dumpsters, mobility aids, strollers)
- and drop "bench" [confirmed needed — trash cans box as "parking"]
- P3 Vibration border overlay — ABSORBED into the OSI-007 dashboard footer
- (LAYER 4 + Appendix A); kept here only as a pointer.
- P4 Road-vs-pavement segmentation + map-matching
-
-# RETIRED: OSI-017 (footer dashboard) — was a duplicate created 2026-06-19
-# of work already specified in OSI-007-DASHBOARD-SPEC.md. Its one unique
-# addition (the rigorous ISO 8608 coefficient-C objective) is now folded
-# into that spec as APPENDIX A. Do not re-create OSI-017; the dashboard is
-# part of OSI-007 + its spec file.
-
----
+# RETIRED: OSI-017 (footer dashboard) — duplicate; its ISO 8608 objective is
+# now DASHBOARD-SPEC Appendix A. Do not re-create; dashboard is part of OSI-007.
 
 ### DONE
-OSI-001 through OSI-006, OSI-006b, OSI-009, OSI-010, OSI-013 — see previous logs and UPDATE LOG.
-
-(OSI-019 UDP sonification was confirmed BUILT per RECONCILIATION-LEDGER
-C-011 — commit 7770e19, 2026-05-18 — but stays informal until/unless
-Vasil folds it in formally.)
+OSI-001..006, 006b, 009, 010, 013 — see prior logs.
+(OSI-019 UDP sonification confirmed BUILT per RECONCILIATION-LEDGER C-011,
+commit 7770e19, 2026-05-18 — stays informal unless Vasil folds it in.)
 
 ---
 
-## UPDATE LOG
-(Older entries elided for brevity; see prior SRS revisions for full history.
- Latest entries:)
+## UPDATE LOG (latest first; older in prior revisions)
+2026-06-24 (evening) — OSI-023 v1 LANDED in waytrace_analysis.py and
+ real-push data REFUTES the bench-test "Y is vertical" generalisation:
+ the new "K Push" (ART-202606240822.csv, 5.36 km Küschall shakedown)
+ shows the resting gravity vector at X=-0.49, Y=+1.13, Z=+9.86
+ (vertical=Z, screen-up flat in the pocket), then under push load
+ (30–60 s) shifts to X=+9.46, Y=+0.13, Z=+2.89 (vertical=X — pocket
+ swung 90° forward), then returns to vertical=Z when stopped. The
+ bench test was held by hand; under real push load the pocket settles
+ into a different orientation. CONCLUSION: no single fixed axis can
+ be assumed vertical for the hanging-pocket mount — use the LIVE
+ gravity vector (low-pass < 0.25 Hz) and project per-sample.
+ IMPLEMENTED: compute_gravity_vertical(accel, fs) — projection onto
+ unit gravity, |g| subtracted. wk_weighted_vertical() now consumes
+ this; for old-chair (gravity steady on Y) the projection degenerates
+ to a_y − g, so historical analyses are byte-equivalent.
+ OSI-023 v2 (pendulum HP) ALSO LANDED: pocket pendulum peak measured
+ at 1.07 Hz (5.8× above 3–8 Hz terrain reference) on today's steady
+ windows. Wk band-pass low edge bumped 0.4 Hz → 2.0 Hz for new-chair
+ files (filename ≥ 202606220000). Disclosed in ANL output. Effect on
+ K Push: VDV_Wk 28.6 → 27.9 (≈unchanged, expected — VDV energy is
+ mostly above 5 Hz where Wk peaks); ED 4.9 → 1.5 J/m (the pendulum
+ was contributing ~70% of the "energy" reading); session ISO 8608
+ E → A (the 2.0 Hz HP also strips real low-frequency road content
+ from the whole-session fit — Stage-2 per-50m method [TODO #53] will
+ fix this without losing terrain content). VDV remains the honest
+ health-exposure metric on the new chair.
+ NEXT: Stage-2 per-50m ISO 8608 (the SRS Appendix A method) so the
+ class reflects the road, not the pendulum filter. Until then quote
+ VDV (and ED post-filter) on new-chair pushes.
+2026-06-24 — OSI-023 created: hanging-pocket parasitic-motion filtering.
+ The new backrest mount is a NON-RIGID HANGING pocket (top edge to the
+ right, screen forward, camera back). It adds pendulum sway/resonance
+ (low frequency, < ~2-3 Hz) on top of the real terrain vibration. Must be
+ measured from real rolling data and filtered (high-pass/notch before Wk/
+ VDV/ISO 8608), GEOMETRY_FACTOR re-tuned, and the filtering DISCLOSED in
+ outputs. Blocks trusting new-chair roughness numbers until done. Vertical
+ channel itself is unaffected (Y still vertical, verified 2026-06-24).
+2026-06-24 — NEW-CHAIR AXIS MAPPING VERIFIED from ART-202606240047.csv:
+ VERTICAL IS STILL Y (resting gravity X=0.56 Y=8.75 Z=4.32; Y=89% of g;
+ ~26° backrest tilt on Z). No vertical-axis code change needed. X_accel =
+ wheelie/pitch axis. The earlier "vertical moves to X" hypothesis was
+ DISPROVEN. Second wheelie was a real BACKWARD TIP-OVER (loosened anti-tips
+ not re-hardened) — 22.8 m/s² spike at t≈237.7 s; Vasil OK; anti-tips
+ lowered + to be re-hardened by Kosta.
+2026-06-22 — PHYSICAL SETUP revised for the new Küschall chair + backrest
+ pocket position (then hypothesised; verified 2026-06-24).
+2026-06-21 — MERGE-FIRST pipeline correction. FIELD METHOD: pause/resume at
+ breaks. DASHBOARD QA BUNDLE; footer = VDV; PREVIEW FRAMES FIRST. OSI-022
+ created. GDPR blur CONFIRMED working.
+2026-06-19 — Pipeline order LOCKED; SRS forks reconciled; ISO 8608 →
+ DASHBOARD-SPEC Appendix A; OSI-017 retired; OSI-021 temporal persistence;
+ DASHBOARD-SPEC Appendix B ("heart-rate monitor" = metaphor; footer plots
+ VIBRATION, not heart rate).
+2026-06-18 — OSI-016 SYNC clapper field-proven; DASHBOARD-SPEC written.
 2026-06-17 — OSI-006b DONE.
-2026-06-17 — OSI-016 created from phone with full SYNC clapper spec.
-2026-06-18 (01:15) — OSI-016 PARTIAL: first SYNC APK shipped (WT-202606180115.apk).
-2026-06-18 (02:20) — In-room test found 2 UI bugs (clipped SYNC button + missing cooldown).
-2026-06-18 (06:04) — Last week's OSI-007 batch FINISHED (10 h 46 min).
-2026-06-18 (14:42) — OSI-016 bug fixes shipped (WT-202606181442.apk).
-2026-06-18 (15:11) — OSI-016 in-room retest PASSED (cooldown deltas >10 s; button readable).
-2026-06-18 (18:03) — OSI-007-DASHBOARD-SPEC.md written (4-layer HUD, from v6 sketch).
-2026-06-18 push — first field run of OSI-016 SYNC clapper: 4 chimes
- captured across 8 MOVs + 2 ART files, all detectable post hoc; sync
- lock works.
-2026-06-19 (11:57) — Phase-2 batch re-launched after the overnight
- pandas-missing wipeout. PRE-FLIGHT import check + fail-fast per step
- hardened into tools/vtx1_phase2_batch.sh.
-2026-06-19 — Per-push pipeline order LOCKED (see PER-PUSH PIPELINE section):
- (1) auto-fetch on SD insert → (2) chime-locked ART↔video sync →
- (3) YOLO detection pass → (4) targeted GDPR blur with "blur-when-
- uncertain" backstop → (5) dashboard HUD → (6) concat per push →
- (7) gated YouTube upload. The refactor of osi007_final.py to match
- this order is OSI-021 in TODO.
-2026-06-19 — OSI-007 spec note: once Vasil sets the Akaso V50 X clock to
- real wall-clock time, the camera burns an upper-left timestamp into the
- frame that will overlap the dashboard title + speed HUD. Future layout
- will shift the HUD text down ~80 px or crop a thin band off the top
- before running the dashboard.
-2026-06-19 (20:30) — MERGE: two forked SRS copies on Drive reconciled into
- this single file (base = pipeline-order version; the OSI-017 footer-
- dashboard task folded into OSI-007-DASHBOARD-SPEC.md as APPENDIX A —
- the rigorous ISO 8608 coefficient-C method: 50 m windows, time→space,
- FFT PSD, S_z=C·(Ω/Ω₀)^-2 fit, A–F class lookup, with the Y_accel−g
- vertical-axis correction and honesty guards). OSI-017 retired as a
- duplicate. REAR-WINDOW P3 (vibration border) noted as absorbed into the
- dashboard footer. No content deleted anywhere.
-2026-06-19 (later) — OSI-021 HARD REQUIREMENT added: temporal blur
- persistence (NO BLINKING). Vasil reviewed output and saw plate blur
- flickering on/off on the same car (readable in some frames). Fix:
- blur bound to YOLO track ID across the whole track — before, during,
- and after detections, with time padding and interpolation through
- detector dropouts; faces same way; safety backstop for never-detected
- plates/faces. Tracking added to pipeline step 3. ZERO readable-plate
- frames is the acceptance bar before UPLOAD_TO_YOUTUBE may be enabled.
- "Removed, absolutely" — Vasil.
-2026-06-20 (morning) — 2026-06-19 push batch ("ISO 8608 Class E Push",
- 6.20 km, 7 MOVs) launched at 09:17, stopped at ~10:30 mid-first-MOV
- after Vasil flagged the blinking GDPR leak in the existing osi007_final
- output. SD card mounted on VT-X1, 22 GB of new MOVs copied (yesterday's
- sources archived to ~/Videos/VIDEO_prev_20260620), per-MOV offsets
- derived from chime detection: session 1 bookend drift -0.62 s, session
- 2 bookend drift -1.69 s (both healthy). New ART files + GPX uploaded
- to ~/waytrace-video/art/. Yesterday's 2026-06-18 dashboard outputs
- archived to ~/Videos/VIDEO_dashboard_20260618/ (concat
- RW-PUSH-202606181630-final.mp4, 9.8 GB, 99 m 28 s) for review while
- the new pipeline is built.
-2026-06-20 (later) — OSI-021 IMPLEMENTED. osi007_detect.py +
- osi007_blur.py written. The detect script tracks objects with
- Ultralytics BotSort and runs focused plate/face detection inside each
- vehicle/person crop; the blur script computes per-track temporal-
- persistent blur regions via relative-bbox interpolation + ±0.5 s
- padding + safety backstop. Batch script re-wired to call the two new
- stages in order. Pipeline is now ready for the 2026-06-19 push re-run
- with no-blinking blur. Acceptance review (frame-by-frame, ZERO
- readable plates / forward-facing faces) is gated before
- UPLOAD_TO_YOUTUBE can be flipped.
