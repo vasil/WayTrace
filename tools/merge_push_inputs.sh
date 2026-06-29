@@ -60,7 +60,9 @@ ffmpeg -y -hide_banner -loglevel error \
 rm -f "$LIST"
 echo "  -> $(du -h "$MERGED_MOV" | cut -f1)"
 dur=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$MERGED_MOV")
-printf "  duration: %.1f min\n" "$(echo "$dur / 60" | bc -l)"
+# Force C locale so printf accepts the dot-decimal output of bc, even when
+# the user's LC_NUMERIC is e.g. mk_MK.UTF-8 (which expects a comma).
+LC_NUMERIC=C printf "  duration: %.1f min\n" "$(echo "$dur / 60" | bc -l)"
 
 # ── 2) merge ART CSVs (only if 2+ matching) ─────────────────────────────
 if [ -n "$ART_DIR" ] && [ -n "$ART_GLOB" ]; then

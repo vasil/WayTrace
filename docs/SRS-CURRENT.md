@@ -1,6 +1,7 @@
 # Open Streets Initiative — SRS-CURRENT
 # Single permanent workflow file. Always updated in place. Never replaced.
-# Last updated: 2026-06-24 UTC+2 (hanging-pocket mounting dynamics: OSI-023)
+# Last updated: 2026-06-27 UTC+2 (license-plate streak tracker OSI-024 +
+#                                  dashboard speed-HUD 1 Hz latch + GPS-dropout blank)
 #
 # MERGE NOTE (2026-06-19): two SRS copies had forked on Drive — reconciled
 # into one. Dashboard detail lives in OSI-007-DASHBOARD-SPEC.md (Appendix A
@@ -328,6 +329,78 @@ QA-9. MINIMAP BORDER → DARK GRAY, borderline-only, no fill.
  pocket-sway peak is gone from the post-filter PSD; same input → same
  output.
 
+**OSI-024 | License-Plate Streak Tracker — GDPR-safe repeat-offender detector**
+ Added 2026-06-27. MEDIUM — advocacy-grade evidence for cars that habitually
+ occupy curb cuts / sidewalks. Builds on OSI-021 (the plate is already
+ detected and tracked for blurring) and OSI-022 (per-vehicle accounting).
+
+ GDPR HARD CONSTRAINT: the plate text NEVER appears on the rendered video.
+ OCR result lives only in a local SQLite DB on VT-X1. Video output and
+ anything uploaded to YouTube continue to show the plate fully blurred.
+ The on-screen label changes only the *text*, not the blur.
+
+ STORAGE:
+ - SQLite at ~/waytrace-video/plates.db (gitignored; never synced).
+ - Table `plates(plate_text PK, first_seen_date, last_seen_date,
+     chair_lat_bin, chair_lon_bin, chair_heading_bin, ocr_conf_max,
+     total_pushes)`.
+ - Table `sightings(plate_text, push_ts, date, chair_lat, chair_lon,
+     chair_heading_deg, ocr_conf, yolo_conf, bbox_xyxy)` — append-only;
+     one row per detected track.
+ - PLATE-LOCATION IDENTITY is derived from the CHAIR's pose, NOT a GPS
+   on the car (we don't have one). The car's position is inferred from:
+     (a) the chair's lat/lon at detection time (from GPX, via the
+         video↔ART offset),
+     (b) the chair's heading from `rotvec` (phone orientation), and
+     (c) the camera's view direction (rear-facing on this rig).
+   The "cluster" is therefore (chair_lat_bin ≈ 10 m, chair_lon_bin ≈ 10 m,
+   chair_heading_bin = 45° octant) keyed with the plate text. Same
+   plate parked in the same direction on the same stretch of street =
+   same streak; same plate on a different street, or facing differently,
+   is a separate streak. v2 may project a ray from the camera along the
+   chair-heading vector and bin actual car positions; v1 keeps the
+   cluster on chair pose to avoid distance-estimation error.
+
+ OCR:
+ - EasyOCR (GPU) on each plate crop AFTER YOLO confirms the box, BEFORE
+   blur is applied. CPU fallback if no CUDA.
+ - Lowest-cost normalisation: uppercase, strip whitespace and dashes,
+   drop reads with confidence < 0.55 or fewer than 5 characters.
+ - One OCR pass per TRACK (not per frame); aggregate by majority vote
+   across the track's frames; final confidence = max single-frame conf.
+ - Failed OCR → track still gets blurred, but contributes no DB row.
+
+ STREAK DEFINITIONS:
+ - daily_streak = max run of CONSECUTIVE calendar days the (plate,cluster)
+   was sighted at least once. A missed day resets the run.
+ - weekly_streak = number of CONSECUTIVE ISO weeks the (plate,cluster)
+   was sighted at least once. A missed week resets.
+ - Both computed at the end of each push from the sightings table.
+ - Idempotency: a push reprocessed on the same calendar day does not
+   increment the streak (DB enforces `UNIQUE(plate, date, lat_cluster,
+   lon_cluster)` on sightings).
+
+ ON-SCREEN LABEL (replaces YOLO text label only; box + blur unchanged):
+ - daily_streak < 7  → standard YOLO label, e.g. `car 92%`. Streak hidden.
+ - daily_streak ≥ 7  → enhanced label, e.g. `car · 12d 2w · 92%`
+     ("12 days, 2 weeks", followed by YOLO confidence). Visible from week
+     two onward and forever after — once a car earns a streak it keeps it.
+ - PLATE TEXT IS NEVER IN THE LABEL. No exceptions.
+
+ ACCEPTANCE:
+ - First time a plate is seen → standard `car NN%` label; DB row created.
+ - Reprocessing the same push → no double-count; streak unchanged.
+ - Same plate, same curb, on day 1..7 → label stays plain car. On day 8 it
+   flips to `car · 7d 1w · NN%`.
+ - Spot-check 20 frames after a full push: ZERO plate characters visible
+   anywhere in the rendered video.
+ - DB survives a push and can be queried offline:
+     `sqlite3 plates.db "SELECT plate_text, daily_streak FROM v_streaks
+        ORDER BY daily_streak DESC LIMIT 20;"`
+
+ OUT OF SCOPE for v1: cross-cluster reasoning (same plate roaming),
+ per-week trend graphs, automated LTR generation from top streaks.
+
 **OSI-022 | Forced-Road Counter — HUD live count + post-run advocacy report**
  HIGH (advocacy core). Vasil is legally a pedestrian; pushing on the
  carriageway is never by choice — either no pavement, or pavement above the
@@ -382,6 +455,23 @@ commit 7770e19, 2026-05-18 — stays informal unless Vasil folds it in.)
 ---
 
 ## UPDATE LOG (latest first; older in prior revisions)
+2026-06-27 — OSI-024 (license-plate streak tracker) added as TODO with
+ GDPR-strict spec: plate text in local SQLite only, never on rendered
+ video. Streak unlocks at ≥7 days; before that the YOLO label stays
+ plain `car NN%`. Also: dashboard speed HUD switched from per-frame
+ interpolation to a 1 Hz latch with GPS-dropout blank — Vasil reported
+ the upper-left speed flickering 2+ times per second on the Soundless
+ final; the old code recomputed `np.interp(t_art, gpx_t, speeds)` every
+ frame against ~1 Hz GPX, so micro-jitter showed live. New code refreshes
+ once per second of video time and shows "— km/h" when the nearest GPX
+ sample is more than 3 s away. Code in tools/osi007_dashboard.py;
+ mirrored to vt-x1:~/waytrace-video/. Does NOT apply to the
+ mid-flight Three Summits Push batch (Python loaded old code at start);
+ effective next push. Also: PHYSICAL field observation logged —
+ pocket mount attenuates real signal (Three Summits = ISO class A on
+ a three-summit climb), reinforces OSI-023 v3 priority and the push to
+ frame-mount the phone. See memory: phone-mount-attenuation.
+
 2026-06-24 (evening) — OSI-023 v1 LANDED in waytrace_analysis.py and
  real-push data REFUTES the bench-test "Y is vertical" generalisation:
  the new "K Push" (ART-202606240822.csv, 5.36 km Küschall shakedown)

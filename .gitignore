@@ -9,3 +9,14 @@ captures/
 .cxx/
 __pycache__/
 *.pyc
+
+# OSI-024 — pseudonymous plates DB + per-machine salt MUST NOT enter the
+# public repo. Methodology is public; data and salt stay local.
+plates.db
+plates.db.bak.*
+plate_salt.bin
+
+# OSI-025 — per-push metrics DB (speed, future VDV/IRI joinable rows).
+# Methodology is public; the harvested data lives only locally.
+data/metrics.db
+data/metrics.db-journal

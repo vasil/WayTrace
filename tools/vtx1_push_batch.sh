@@ -55,6 +55,17 @@ OUT_DIR="$HOME/Videos/VIDEO_dashboard"
 TMP_DIR="$ROOT/tmp"
 LOG="$ROOT/push_batch.log"
 
+# OSI-024: three-stage rollout per [[feature-rollout-stages]] memory.
+#   test     — DB writes only, NO visible label change (default for first push)
+#   staging  — DB writes + enhanced label "car · Nd Mw · NN%" when streak ≥ 7
+#   final    — locked-in; same as staging
+#   off      — skip OCR + DB entirely (legacy path)
+OSI024_STAGE="${OSI024_STAGE:-test}"
+export OSI024_STAGE
+log_osi024_header() {
+    log "OSI024_STAGE=$OSI024_STAGE  (test=DB only, staging/final=label on)"
+}
+
 mkdir -p "$OUT_DIR" "$TMP_DIR"
 
 SP=$(python -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")
@@ -71,6 +82,7 @@ log "ART CSV   : $ART_CSV"
 log "GPX       : $GPX"
 log "title     : $TITLE"
 log "out dir   : $OUT_DIR"
+log_osi024_header
 
 for required in "$MERGED_MOV" "$ART_CSV" "$GPX"; do
     if [ ! -f "$required" ]; then
@@ -81,6 +93,7 @@ done
 
 DS="$TMP_DIR/${PUSH_TS}_1080p.mp4"
 DETECT_JSON="$TMP_DIR/${PUSH_TS}_detect.json"
+DETECT_ENRICHED="$TMP_DIR/${PUSH_TS}_detect_osi024.json"
 BLURRED="$TMP_DIR/${PUSH_TS}_consolidated.mp4"
 FINAL="$OUT_DIR/RW-PUSH-${PUSH_TS}-final.mp4"
 
@@ -112,33 +125,19 @@ fi
 t_c=$(date +%s)
 log "    detect:    $((t_c - t_b))s, $(du -h "$DETECT_JSON" | cut -f1) JSON"
 
-# [3/4] osi007_blur.py — temporal-persistent blur, NO BLINKING
-log "[3/4] osi007_blur.py (temporal-persistent blur, NO BLINKING)"
-if ! python -u "$ROOT/osi007_blur.py" "$DS" "$DETECT_JSON" "$BLURRED" \
-        > "$TMP_DIR/${PUSH_TS}_blur.log" 2>&1; then
-    log "    BLUR FAILED — see $TMP_DIR/${PUSH_TS}_blur.log"; exit 1
-fi
-t_d=$(date +%s)
-log "    blur:      $((t_d - t_c))s, $(du -h "$BLURRED" | cut -f1)"
-
-# [4/4] osi007_dashboard.py — find chime offset ONCE on merged audio
-# The dashboard script auto-detects the chime via sync_chime_detect IF
-# --video-art-offset is omitted (per SRS MERGE-FIRST step D); otherwise
-# you can pre-compute and pass it as --video-art-offset.
+# Derive video↔ART offset ONCE from the chime in the downscaled MOV.
+# Timing is identical pre- and post-blur, so we do this here (before blur)
+# so OSI-024 can use it.
 OFFSET="${OFFSET:-}"
-log "[4/4] dashboard HUD overlay (single offset for the whole push)"
-
-# If OFFSET not provided, derive it now from the merged video's chime.
 if [ -z "$OFFSET" ]; then
-    log "    deriving video_to_art_offset from chime in merged MOV"
-    python -u "$ROOT/sync_chime_detect.py" --save-json "$BLURRED" \
+    log "[offset] deriving video_to_art_offset from chime in downscaled MOV"
+    python -u "$ROOT/sync_chime_detect.py" --save-json "$DS" \
         > "$TMP_DIR/${PUSH_TS}_chime.log" 2>&1 || true
-    # First detected chime time is the anchor:
     CHIME_T=$(python -c "
 import json, sys
 from pathlib import Path
-p = Path('$BLURRED').with_suffix('.MOV.sync_chimes.json')
-if not p.exists(): p = Path('$BLURRED').with_suffix('.mp4.sync_chimes.json')
+p = Path('$DS').with_suffix('.mp4.sync_chimes.json')
+if not p.exists(): p = Path('$DS').with_suffix('.MOV.sync_chimes.json')
 if p.exists():
     j = json.loads(p.read_text())
     cs = j.get('chimes_s') or []
@@ -147,10 +146,9 @@ if p.exists():
 print('NONE')
 " 2>/dev/null)
     if [ "$CHIME_T" = "NONE" ] || [ -z "$CHIME_T" ]; then
-        log "    NO CHIME FOUND in merged MOV — using offset=0 (visual sanity only)"
+        log "    NO CHIME FOUND in downscaled MOV — using offset=0 (visual sanity only)"
         OFFSET="0"
     else
-        # First sync_pulse t in ART (relative to ART start)
         ART_T=$(python -c "
 import csv
 t0 = None
@@ -161,18 +159,62 @@ with open('$ART_CSV') as f:
         if row[1] == 'sync_pulse':
             print((int(row[0]) - t0) / 1000.0); break
 ")
-        # offset = art_t - chime_t  (so art_t = video_t + offset)
         OFFSET=$(python -c "print($ART_T - $CHIME_T)")
         log "    chime at video=${CHIME_T}s ; sync_pulse at ART=${ART_T}s ; offset=${OFFSET}s"
     fi
 fi
 
+# [3/5] osi024_ocr.py — OCR plates, write sightings to plates.db,
+#                       emit enriched detect.json. Skipped when stage=off.
+BLUR_DETECT="$DETECT_JSON"
+if [ "$OSI024_STAGE" != "off" ]; then
+    log "[3/5] osi024_ocr.py (EasyOCR + plates.db, stage=$OSI024_STAGE)"
+    if ! python -u "$ROOT/osi024_ocr.py" \
+            --video      "$DS" \
+            --detect-in  "$DETECT_JSON" \
+            --detect-out "$DETECT_ENRICHED" \
+            --art        "$ART_CSV" \
+            --gpx        "$GPX" \
+            --offset     "$OFFSET" \
+            --push-ts    "$PUSH_TS" \
+            --stage      "$OSI024_STAGE" \
+            > "$TMP_DIR/${PUSH_TS}_osi024.log" 2>&1; then
+        log "    OSI024 FAILED — see $TMP_DIR/${PUSH_TS}_osi024.log"
+        log "    proceeding with non-enriched detect.json (degraded)"
+    else
+        BLUR_DETECT="$DETECT_ENRICHED"
+        t_x=$(date +%s)
+        log "    osi024:    $((t_x - t_c))s -> $(du -h "$DETECT_ENRICHED" | cut -f1)"
+    fi
+else
+    log "[3/5] osi024_ocr.py SKIPPED (OSI024_STAGE=off)"
+fi
+
+# [4/5] osi007_blur.py — temporal-persistent blur, NO BLINKING
+log "[4/5] osi007_blur.py (temporal-persistent blur, NO BLINKING)"
+if ! OSI024_STAGE="$OSI024_STAGE" python -u "$ROOT/osi007_blur.py" \
+        "$DS" "$BLUR_DETECT" "$BLURRED" \
+        > "$TMP_DIR/${PUSH_TS}_blur.log" 2>&1; then
+    log "    BLUR FAILED — see $TMP_DIR/${PUSH_TS}_blur.log"; exit 1
+fi
+t_d=$(date +%s)
+log "    blur:      $((t_d - t_c))s, $(du -h "$BLURRED" | cut -f1)"
+
+# [5/5] osi007_dashboard.py — single offset for the whole push
+log "[5/5] dashboard HUD overlay"
+# osi007_dashboard.py takes piecewise spec via --offsets and single
+# float via --video-art-offset. Pick the right flag based on OFFSET shape.
+if [[ "$OFFSET" == *","* ]]; then
+    OFFSET_ARG=( --offsets "$OFFSET" )
+else
+    OFFSET_ARG=( --video-art-offset "$OFFSET" )
+fi
 if ! python -u "$ROOT/osi007_dashboard.py" \
         --video "$BLURRED" \
         --art   "$ART_CSV" \
         --gpx   "$GPX" \
         --title "$TITLE" \
-        --video-art-offset "$OFFSET" \
+        "${OFFSET_ARG[@]}" \
         --out   "$FINAL" \
         > "$TMP_DIR/${PUSH_TS}_dash.log" 2>&1; then
     log "    DASHBOARD FAILED — see $TMP_DIR/${PUSH_TS}_dash.log"; exit 1
@@ -184,8 +226,23 @@ fi
 log "    dashboard: $((t_e - t_d))s, $(du -h "$FINAL" | cut -f1)"
 
 # Cleanup
-rm -f "$DS" "$DETECT_JSON" "$BLURRED"
+rm -f "$DS" "$DETECT_JSON" "$DETECT_ENRICHED" "$BLURRED"
 log "[DONE $PUSH_TS] total $((t_e - t_a))s -> $FINAL"
+
+# Disk hygiene: gzip the ART CSV we just used. Plain CSV compresses ~10×.
+# If ART_CSV is a symlink (e.g. ART-MERGED-* → ART-*), we gzip the real
+# file and replace the symlink so it still points at something readable.
+art_real=$(readlink -f "$ART_CSV" 2>/dev/null || echo "$ART_CSV")
+if [ -f "$art_real" ] && [[ "$art_real" != *.gz ]]; then
+    sz_before=$(stat -c%s "$art_real")
+    gzip -9 "$art_real"
+    if [ -L "$ART_CSV" ]; then
+        ln -sf "$art_real.gz" "${ART_CSV}.gz"
+        rm -f "$ART_CSV"
+    fi
+    sz_after=$(stat -c%s "$art_real.gz")
+    log "[zip] ART CSV  $((sz_before / 1024 / 1024))MB -> $((sz_after / 1024 / 1024))MB"
+fi
 
 # Optional YouTube upload (gated)
 if [ "${UPLOAD_TO_YOUTUBE:-0}" = "1" ]; then

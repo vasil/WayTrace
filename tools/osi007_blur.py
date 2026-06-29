@@ -42,6 +42,28 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+# OSI-024 stage gate. Default "test" = DB writes happen in osi024_ocr.py,
+# but THIS renderer still uses the standard label. "staging" / "final" turn
+# the enhanced label on for tracks whose daily_streak ≥ OSI024_STREAK_MIN.
+OSI024_STAGE = os.environ.get("OSI024_STAGE", "test").lower()
+OSI024_STREAK_MIN = int(os.environ.get("OSI024_STREAK_MIN", "7"))
+
+
+def osi024_label(cls, conf, daily_streak, weekly_streak, ocr_conf):
+    """OSI-024 label rule.
+    GDPR HARD CONSTRAINT: this renderer never sees the readable plate.
+    It receives only the streak counts derived in osi024_ocr.py from a
+    salted-hash database. The string never contains a plate identifier.
+    Returns the label string to render on the colored YOLO box."""
+    if (OSI024_STAGE in ("staging", "final")
+            and daily_streak is not None
+            and daily_streak >= OSI024_STREAK_MIN
+            and ocr_conf is not None):
+        pct = int(round(float(ocr_conf) * 100))
+        wk = weekly_streak if weekly_streak is not None else 0
+        return f"{cls} · {int(daily_streak)}d {int(wk)}w · {pct}%"
+    return f"{cls} {conf:.2f}"
+
 # ── blur params (same as osi007_final.py) ─────────────────────────────────
 PLATE_KERNEL = (61, 61); PLATE_SIGMA = 30
 FACE_KERNEL  = (51, 51); FACE_SIGMA  = 25
@@ -286,13 +308,21 @@ def main(in_mp4, in_json, out_mp4):
             elif mode == "backstop":
                 track_summary["faces_backstop_only"] += 1
 
-        # box overlay plan
+        # box overlay plan — OSI-024 swaps the per-frame label string
+        # when stage >= staging AND this track carries a streak ≥ MIN.
         color = CLASS_COLOR.get(cls)
         if color is not None:
-            label = cls
+            # osi024_ocr.py attaches ocr_conf + daily/weekly streak (and
+            # the salted plate_hash, which we DO NOT render). Absent →
+            # falls back to standard "cls conf".
+            oconf    = track.get("ocr_conf")
+            d_streak = track.get("daily_streak")
+            w_streak = track.get("weekly_streak")
             for f, bb, conf in zip(track["frames"], track["bboxes"],
                                    track["confs"]):
-                box_plan[f].append((bb, color, label, conf))
+                lbl = osi024_label(cls, float(conf),
+                                   d_streak, w_streak, oconf)
+                box_plan[f].append((bb, color, lbl, conf))
 
     print(f"plan built: plates={sum(len(v) for v in plate_plan.values())} "
           f"regions  faces={sum(len(v) for v in face_plan.values())} regions  "
@@ -343,11 +373,11 @@ def main(in_mp4, in_json, out_mp4):
                     roi, FACE_KERNEL, FACE_SIGMA)
                 counts["face_blurs"] += 1
 
-        # colored boxes on top
-        for (bb, color, label, conf) in box_plan.get(frame_idx, []):
+        # colored boxes on top (label already formatted by osi024_label)
+        for (bb, color, label, _conf) in box_plan.get(frame_idx, []):
             x1, y1, x2, y2 = bb
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-            txt = f"{label} {conf:.2f}"
+            txt = label
             (tw, th_), _ = cv2.getTextSize(
                 txt, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
             cv2.rectangle(frame, (x1, y1 - th_ - 6),

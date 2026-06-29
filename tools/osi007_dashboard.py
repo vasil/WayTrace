@@ -202,11 +202,13 @@ def text_outlined(img, text, org, scale, color, thickness=2,
 
 
 def draw_title_and_speed(frame, title, speed_kmh, iso_class):
-    """QA-7 speed colour by ISO class + QA-8 shared left anchor."""
+    """QA-7 speed colour by ISO class + QA-8 shared left anchor.
+    speed_kmh=None → blank (e.g. GPS dropout)."""
     text_outlined(frame, title, (LEFT_ANCHOR, TITLE_BASELINE),
                   1.1, YELLOW, thickness=2, outline=4)
     speed_color = ISO_CLASS_COLOR.get(iso_class, WHITE)
-    text_outlined(frame, f"{speed_kmh:.1f} km/h",
+    speed_text = "— km/h" if speed_kmh is None else f"{speed_kmh:.1f} km/h"
+    text_outlined(frame, speed_text,
                   (LEFT_ANCHOR, SPEED_BASELINE),
                   2.1, speed_color, thickness=4, outline=5)
     text_outlined(frame, f"ISO 8608 class {iso_class}",
@@ -327,9 +329,49 @@ def main():
     ap.add_argument("--gpx",   required=True, type=Path)
     ap.add_argument("--title", default="Push")
     ap.add_argument("--video-art-offset", type=float, default=0.0,
-                    help="art_time = video_time + offset (seconds).")
+                    help="art_time = video_time + offset (seconds). "
+                         "Used when --offsets is NOT given (single offset).")
+    ap.add_argument("--offsets", type=str, default=None,
+                    help="Piecewise offsets for camera-stop/restart pushes. "
+                         "Format: 'video_t1:offset1,video_t2:offset2,...' "
+                         "where each pair applies starting at video_t. "
+                         "Example: '0:37.93,2453:2527.23' = 2 segments split "
+                         "at video t=2453s.")
     ap.add_argument("--out",   required=True, type=Path)
     args = ap.parse_args()
+
+    # ── Build the offset lookup. If --offsets given, use piecewise;
+    # otherwise the single --video-art-offset for the whole video.
+    if args.offsets:
+        segments = []
+        for chunk in args.offsets.split(","):
+            t_str, off_str = chunk.strip().split(":")
+            segments.append((float(t_str), float(off_str)))
+        segments.sort()
+        print(f"piecewise offsets ({len(segments)} segments):")
+        for t, o in segments:
+            print(f"  starting video_t={t:8.2f}s : offset={o:+8.2f}s")
+    else:
+        segments = [(0.0, args.video_art_offset)]
+        print(f"single offset: {args.video_art_offset:+.2f}s")
+
+    def video_t_to_offset(t):
+        """Pick the segment offset for video time t."""
+        off = segments[0][1]
+        for seg_t, seg_off in segments:
+            if t >= seg_t:
+                off = seg_off
+            else:
+                break
+        return off
+
+    def seam_distance(t):
+        """Seconds to/from the nearest segment boundary (used for the
+        'BREAK' overlay on the seam frames)."""
+        if len(segments) < 2:
+            return float("inf")
+        boundaries = [s[0] for s in segments[1:]]
+        return min(abs(t - b) for b in boundaries)
 
     # Load ART & VDV series (QA-1: VDV, not RMS)
     acc = load_art(args.art)
@@ -377,9 +419,27 @@ def main():
 
     # Writer — mp4v fallback (avc1 often fails on this box); we'll re-encode
     # the temp file with libx264 in the audio-mux step.
-    tmp_out = Path(tempfile.mkstemp(suffix=".mp4")[1])
+    #
+    # IMPORTANT (2026-06-22 fix): write the temp into the OUTPUT dir, not
+    # /tmp. /tmp is a small tmpfs on this machine and a 70-min 1080p mp4v
+    # temp file (~14 GB) overflows it, corrupts the moov atom, and the
+    # remux step fails with "moov atom not found".
+    tmp_dir_for_writer = args.out.resolve().parent
+    tmp_dir_for_writer.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(suffix=".mp4", dir=str(tmp_dir_for_writer))
+    import os as _os
+    _os.close(fd)
+    tmp_out = Path(tmp_path)
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     writer = cv2.VideoWriter(str(tmp_out), fourcc, fps, (CANVAS_W, CANVAS_H))
+
+    # Speed HUD latch: refresh at 1 Hz (video time); blank on GPS dropout
+    # so the number doesn't flicker between adjacent GPX samples or lie
+    # when the GPS hasn't reported in seconds.
+    SPEED_HUD_INTERVAL_S = 1.0
+    GPS_STALE_GAP_S = 3.0
+    last_speed_hud_t = -1e9
+    speed_hud = None
 
     frame_i = 0
     while True:
@@ -390,26 +450,44 @@ def main():
             frame = cv2.resize(frame, (CANVAS_W, CANVAS_H),
                                interpolation=cv2.INTER_AREA)
         t_video = frame_i / fps
-        t_art   = t_video + args.video_art_offset
+        # Piecewise (or single) offset lookup — handles
+        # camera-stop/restart pushes per Vasil's "break" sync.
+        t_art   = t_video + video_t_to_offset(t_video)
 
-        # Speed via interpolation on GPX
+        # cur_idx (for minimap dot/passed-segment colouring) updates every
+        # frame — smooth motion is desirable there.
         if 0 <= t_art <= gpx_t[-1]:
-            speed = float(np.interp(t_art, gpx_t, speeds))
-            # current GPX index (for the minimap passed/unpassed split)
             cur_idx = int(np.searchsorted(gpx_t, t_art))
             cur_idx = max(0, min(gpx_n - 1, cur_idx))
         else:
-            speed = 0.0
             cur_idx = 0 if t_art < 0 else gpx_n - 1
+
+        # Speed HUD: latched at 1 Hz of video time. Blank when the
+        # nearest GPX sample is > GPS_STALE_GAP_S away (dropout).
+        if t_video - last_speed_hud_t >= SPEED_HUD_INTERVAL_S:
+            if 0 <= t_art <= gpx_t[-1]:
+                gpx_gap = abs(gpx_t[cur_idx] - t_art)
+                speed_hud = (None if gpx_gap > GPS_STALE_GAP_S
+                             else float(np.interp(t_art, gpx_t, speeds)))
+            else:
+                speed_hud = None
+            last_speed_hud_t = t_video
 
         # Current windowed VDV (QA-1) + derived ISO class (QA-7)
         cur_vdv = float(np.interp(t_art, t_vdv, vdv)) if len(t_vdv) else 0.0
         iso_class = vdv_to_iso_class(cur_vdv)
 
         # ── Draw layers ─────────────────────────────────────────────────
-        draw_title_and_speed(frame, args.title, speed, iso_class)
+        draw_title_and_speed(frame, args.title, speed_hud, iso_class)
         draw_map(frame, proj, route_pts, cur_idx, gpx_vdv)
         draw_footer(frame, t_art, t_vdv, vdv, cur_vdv)
+
+        # BREAK badge on the seam between piecewise segments
+        # (camera-stop/restart) — within ±2 s of a boundary.
+        if seam_distance(t_video) < 2.0:
+            text_outlined(frame, "BREAK",
+                          (CANVAS_W // 2 - 70, CANVAS_H // 2 - 100),
+                          2.2, MAGENTA, thickness=5, outline=6)
 
         writer.write(frame)
         frame_i += 1
