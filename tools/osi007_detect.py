@@ -57,28 +57,45 @@ OBSTACLE_CLASSES = {"fire hydrant", "bench", "parking meter", "stop sign"}
 KEEP_CLASSES = VEHICLE_CLASSES | CYCLIST_CLASSES | OBSTACLE_CLASSES
 
 
-def run_in_crop(model, frame, x1, y1, x2, y2, conf, frame_w, frame_h,
-                pad=20):
-    """Run a detector inside a padded crop of `frame`. Return list of
-    detected boxes in FULL-FRAME coords [(x1,y1,x2,y2,conf), ...].
-    Returns [] if the crop is degenerate."""
-    cx1 = max(0, x1 - pad); cy1 = max(0, y1 - pad)
-    cx2 = min(frame_w, x2 + pad); cy2 = min(frame_h, y2 + pad)
-    if cx2 - cx1 < 16 or cy2 - cy1 < 16:
-        return []
-    crop = frame[cy1:cy2, cx1:cx2]
-    if crop.size == 0:
-        return []
-    r = model(crop, verbose=False, device=0, conf=conf)[0]
-    if r.boxes is None or len(r.boxes) == 0:
-        return []
-    xy = r.boxes.xyxy.cpu().numpy()
-    cf = r.boxes.conf.cpu().numpy()
-    out = []
-    for (bx1, by1, bx2, by2), p in zip(xy, cf):
-        out.append((int(bx1 + cx1), int(by1 + cy1),
-                    int(bx2 + cx1), int(by2 + cy1), float(p)))
-    return out
+def run_in_crops_batched(model, frame, target_boxes, conf,
+                         frame_w, frame_h, pad=20):
+    """Batched crop detector — collects every crop from target_boxes into
+    one YOLO forward pass. Returns a list of per-box hit lists in
+    FULL-FRAME coords, aligned to target_boxes.
+
+    target_boxes: list of (x1, y1, x2, y2) full-frame tuples.
+    Returns: [[(bx1,by1,bx2,by2,conf), ...],  # for target_boxes[0]
+              [...],                            # for target_boxes[1]
+              ...]
+    Empty-lists are used for boxes with degenerate crops."""
+    crops = []
+    origins = []          # (cx1, cy1) offset for each accepted crop
+    result_slots = [[] for _ in target_boxes]
+    for i, (x1, y1, x2, y2) in enumerate(target_boxes):
+        cx1 = max(0, int(x1) - pad); cy1 = max(0, int(y1) - pad)
+        cx2 = min(frame_w, int(x2) + pad); cy2 = min(frame_h, int(y2) + pad)
+        if cx2 - cx1 < 16 or cy2 - cy1 < 16:
+            continue
+        crop = frame[cy1:cy2, cx1:cx2]
+        if crop.size == 0:
+            continue
+        crops.append(crop)
+        origins.append((cx1, cy1, i))
+    if not crops:
+        return result_slots
+    # ONE forward pass for every crop from this frame.
+    results = model(crops, verbose=False, device=0, conf=conf, half=True)
+    for r, (cx1, cy1, i) in zip(results, origins):
+        if r.boxes is None or len(r.boxes) == 0:
+            continue
+        xy = r.boxes.xyxy.cpu().numpy()
+        cf = r.boxes.conf.cpu().numpy()
+        for (bx1, by1, bx2, by2), p in zip(xy, cf):
+            result_slots[i].append(
+                (int(bx1 + cx1), int(by1 + cy1),
+                 int(bx2 + cx1), int(by2 + cy1), float(p))
+            )
+    return result_slots
 
 
 def pick_best(boxes):
@@ -124,9 +141,10 @@ def main(in_mp4, out_json):
     frame_idx = 0
 
     # Ultralytics .track() with stream=True yields one Result per frame, in
-    # order, with persistent track IDs.
+    # order, with persistent track IDs. half=True runs the obj model in FP16.
     for result in obj.track(source=in_mp4, stream=True, persist=True,
-                            verbose=False, device=0, conf=OBJ_CONF):
+                            verbose=False, device=0, conf=OBJ_CONF,
+                            half=True):
         frame = result.orig_img
         boxes = result.boxes
         if boxes is None or boxes.id is None:
@@ -138,28 +156,60 @@ def main(in_mp4, out_json):
         cf  = boxes.conf.cpu().numpy()
         ids = boxes.id.cpu().numpy().astype(int)
 
-        for (x1, y1, x2, y2), c, p, tid in zip(xy, cls, cf, ids):
+        # Two-pass: collect crops for plate + face detectors, then run
+        # each ONCE per frame with all crops batched into one forward pass.
+        kept_rows        = []          # (row_idx into xy/cls/cf/ids) for kept dets
+        vehicle_rows     = []          # subset that need plate detection
+        person_rows      = []          # subset that need face detection
+        for row_idx, (c, tid) in enumerate(zip(cls, ids)):
             if c not in obj_keep_ids:
                 continue
+            kept_rows.append(row_idx)
+            name = obj_names[c]
+            if name in VEHICLE_CLASSES:
+                vehicle_rows.append(row_idx)
+            if name == "person":
+                person_rows.append(row_idx)
+
+        vehicle_boxes = [tuple(xy[r]) for r in vehicle_rows]
+        person_boxes  = [tuple(xy[r]) for r in person_rows]
+
+        plate_hits_per_vehicle = (
+            run_in_crops_batched(plate, frame, vehicle_boxes,
+                                 PLATE_CONF, width, height)
+            if vehicle_boxes else [])
+        face_hits_per_person = (
+            run_in_crops_batched(face, frame, person_boxes,
+                                 FACE_CONF, width, height)
+            if person_boxes else [])
+
+        # Reverse lookups: row_idx -> plate/face hits list
+        vehicle_row_to_hits = {
+            r: plate_hits_per_vehicle[i]
+            for i, r in enumerate(vehicle_rows)
+        }
+        person_row_to_hits = {
+            r: face_hits_per_person[i]
+            for i, r in enumerate(person_rows)
+        }
+
+        for row_idx in kept_rows:
+            x1, y1, x2, y2 = xy[row_idx]
+            c   = cls[row_idx]
+            p   = cf[row_idx]
+            tid = ids[row_idx]
             name = obj_names[c]
 
-            # Run focused plate detector inside vehicle box
             plate_box = None
-            if name in VEHICLE_CLASSES:
-                hits = run_in_crop(plate, frame, x1, y1, x2, y2,
-                                   PLATE_CONF, width, height)
-                # filter out detections in the dashcam-timestamp zone
-                hits = [h for h in hits
+            if row_idx in vehicle_row_to_hits:
+                hits = [h for h in vehicle_row_to_hits[row_idx]
                         if not ((h[0] + h[2]) // 2 < no_blur_x and
                                 (h[1] + h[3]) // 2 < no_blur_y)]
                 plate_box = pick_best(hits)
 
-            # Run focused face detector inside person box
             face_box = None
-            if name == "person":
-                hits = run_in_crop(face, frame, x1, y1, x2, y2,
-                                   FACE_CONF, width, height)
-                face_box = pick_best(hits)
+            if row_idx in person_row_to_hits:
+                face_box = pick_best(person_row_to_hits[row_idx])
 
             entry = tracks.setdefault(int(tid), {
                 "cls":    name,
