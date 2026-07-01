@@ -128,6 +128,66 @@ def gpx_speeds_kmh(gpx):
     return np.concatenate(([0.0], v))
 
 
+def gpx_cum_distance_m(gpx):
+    """Cumulative distance from first point (metres), one per GPX sample."""
+    R = 6_371_000.0
+    lat = np.radians(gpx[:, 1]); lon = np.radians(gpx[:, 2])
+    dlat = np.diff(lat); dlon = np.diff(lon)
+    a = np.sin(dlat/2)**2 + np.cos(lat[:-1])*np.cos(lat[1:])*np.sin(dlon/2)**2
+    seg_m = 2 * R * np.arcsin(np.sqrt(np.clip(a, 0, 1)))
+    return np.concatenate(([0.0], np.cumsum(seg_m)))
+
+
+# Speed smoothing — Vasil 2026-06-30/07-01: don't shuffle 11.3 ↔ 11.6 km/h.
+# Blend a SPACE window (last 50 m of GPX) with a TIME window (last 8 s of
+# GPX) — the "middle way" Vasil asked for after the Rosalia review. Display
+# as 0.5 km/h steps with 0.5 km/h hysteresis so the number is stable.
+SPEED_AVG_WINDOW_M   = 50.0
+SPEED_AVG_TIME_S     = 8.0
+SPEED_STEP_KMH       = 0.5
+SPEED_HYSTERESIS_KMH = 0.5
+
+
+def smoothed_speed_kmh(t_art, gpx_t, cum_dist_m, speeds_kmh,
+                       window_m=SPEED_AVG_WINDOW_M,
+                       window_s=SPEED_AVG_TIME_S):
+    """Mean of a space-window (last window_m metres) and time-window
+    (last window_s seconds) rolling average. Stable at low speed
+    (space window covers many seconds) and responsive at high speed
+    (time window covers many metres). Returns None outside GPX range."""
+    if t_art < gpx_t[0] or t_art > gpx_t[-1]:
+        return None
+    d_now = float(np.interp(t_art, gpx_t, cum_dist_m))
+    lo_s = int(np.searchsorted(cum_dist_m, d_now - window_m, side="left"))
+    hi_s = int(np.searchsorted(cum_dist_m, d_now, side="right"))
+    v_space = (float(np.mean(speeds_kmh[lo_s:hi_s]))
+               if hi_s - lo_s >= 2 else None)
+    lo_t = int(np.searchsorted(gpx_t, t_art - window_s, side="left"))
+    hi_t = int(np.searchsorted(gpx_t, t_art, side="right"))
+    v_time = (float(np.mean(speeds_kmh[lo_t:hi_t]))
+              if hi_t - lo_t >= 2 else None)
+    if v_space is not None and v_time is not None:
+        return 0.5 * (v_space + v_time)
+    if v_space is not None:
+        return v_space
+    if v_time is not None:
+        return v_time
+    return float(np.interp(t_art, gpx_t, speeds_kmh))
+
+
+def kmh_to_pace(kmh):
+    """'M:SS' pace (min:sec / km); '—:—' when v < 1 km/h (would blow up)."""
+    if kmh is None or kmh < 1.0:
+        return "—:—"
+    p = 60.0 / kmh
+    m = int(p)
+    s = int(round((p - m) * 60))
+    if s == 60:
+        m += 1
+        s = 0
+    return f"{m}:{s:02d}"
+
+
 def project_gpx_to_box(gpx, w, h, margin=22):
     """Return projection function (lat, lon) → (x, y) inside (0,0)-(w,h)."""
     lat = gpx[:, 1]; lon = gpx[:, 2]
@@ -202,17 +262,25 @@ def text_outlined(img, text, org, scale, color, thickness=2,
 
 
 def draw_title_and_speed(frame, title, speed_kmh, iso_class):
-    """QA-7 speed colour by ISO class + QA-8 shared left anchor.
-    speed_kmh=None → blank (e.g. GPS dropout)."""
+    """Vasil 2026-07-01 — pace-primary HUD.
+      line 1: M:SS/km, big, ISO-class colour
+      line 2: (X.X km/h), smaller, same colour (scientific view)
+      line 3: ISO 8608 class X, small
+    speed_kmh is a float km/h at 0.5-step, or None for GPS dropout."""
     text_outlined(frame, title, (LEFT_ANCHOR, TITLE_BASELINE),
                   1.1, YELLOW, thickness=2, outline=4)
     speed_color = ISO_CLASS_COLOR.get(iso_class, WHITE)
-    speed_text = "— km/h" if speed_kmh is None else f"{speed_kmh:.1f} km/h"
-    text_outlined(frame, speed_text,
+    pace = kmh_to_pace(speed_kmh)
+    text_outlined(frame, f"{pace}/km",
                   (LEFT_ANCHOR, SPEED_BASELINE),
                   2.1, speed_color, thickness=4, outline=5)
+    kmh_text = ("(— km/h)" if speed_kmh is None
+                else f"({speed_kmh:.1f} km/h)")
+    text_outlined(frame, kmh_text,
+                  (LEFT_ANCHOR, SPEED_BASELINE + 40),
+                  0.75, speed_color, thickness=2, outline=3)
     text_outlined(frame, f"ISO 8608 class {iso_class}",
-                  (LEFT_ANCHOR, SPEED_BASELINE + 36),
+                  (LEFT_ANCHOR, SPEED_BASELINE + 78),
                   0.65, speed_color, thickness=2, outline=3)
 
 
@@ -321,6 +389,155 @@ def draw_footer(frame, t_now, t_vdv, vdv, cur_vdv):
                   0.62, (250, 250, 250), thickness=1, outline=3)
 
 
+# ── Pause cut (Vasil 2026-06-30) ───────────────────────────────────────
+# When WayTrace is paused (e.g. coffee stop), the ART/GPX timestream has a
+# gap. The dashboard should not flatline through the gap; the paused time
+# is just removed. We render a brief caption "paused N min" at the cut
+# boundary then hard-skip the gap.
+PAUSE_GAP_THRESHOLD_S = 30.0     # ART/GPX gap > this counts as a pause
+PAUSE_CAPTION_HOLD_S  = 1.0      # caption stays on for 1 s at the seam
+
+
+def detect_pauses_from_art(acc_t_s, gap_s=PAUSE_GAP_THRESHOLD_S):
+    """Return list of (pause_start_art_s, pause_end_art_s, gap_s) for every
+    gap in the ART timestamps exceeding `gap_s`. Times are in ART seconds
+    (same units as acc['t_s'])."""
+    if len(acc_t_s) < 2:
+        return []
+    dt = np.diff(acc_t_s)
+    out = []
+    for i, d in enumerate(dt):
+        if d > gap_s:
+            out.append((float(acc_t_s[i]), float(acc_t_s[i+1]), float(d)))
+    return out
+
+
+def video_t_in_pause(t_video, pauses_video):
+    """Return (pause_index, pause_duration_s) if t_video is inside one of
+    pauses_video, else (None, None). pauses_video items: (vstart, vend, gap)."""
+    for i, (vs, ve, g) in enumerate(pauses_video):
+        if vs <= t_video < ve:
+            return i, g
+    return None, None
+
+
+def format_pause_caption(gap_s):
+    """'paused 18 min' / 'paused 47 s' — terse on-screen marker."""
+    if gap_s >= 60.0:
+        return f"paused {int(round(gap_s / 60.0))} min"
+    return f"paused {int(round(gap_s))} s"
+
+
+def art_t_to_active_t(t_art, pauses_art):
+    """Vasil 2026-07-01 — active time = ART time with all completed
+    pauses subtracted. Used only for the footer x-axis so the trace
+    has no visible gap across a cut pause (5 s or 45 min alike).
+    Interpolation for cur_vdv still uses real ART time."""
+    elapsed = 0.0
+    for ps, pe, _ in pauses_art:
+        if t_art >= pe:
+            elapsed += (pe - ps)
+        elif t_art > ps:
+            elapsed += (t_art - ps)
+    return t_art - elapsed
+
+
+# ── Photo tail + zoom-to-fullscreen mini-map (Vasil 2026-06-30) ────────
+# When the camera died before the activity finished, the dashboard still
+# has GPX/ART data for the unrecorded tail. We replace the dead video
+# with the Strava activity photo (Rosalia Alpina, etc.) and zoom the
+# mini-map from its corner box to full screen so the route line keeps
+# advancing over the photo background.
+ZOOM_DURATION_S = 3.0                # ease-out window (2026-07-01: 1.5→3.0)
+PHOTO_DIM_ALPHA = 0.55               # 1.0 = no dim, 0.0 = pure black
+PHOTO_EDGE_BLUR_RING_FRAC = 0.20     # outer 20% gets blurred
+PHOTO_EDGE_BLUR_SIGMA = 25.0
+
+
+def ease_out_cubic(p):
+    p = max(0.0, min(1.0, p))
+    return 1.0 - (1.0 - p) ** 3
+
+
+def prepare_photo_background(photo_path, canvas_w=CANVAS_W, canvas_h=CANVAS_H):
+    """Load the photo, scale to canvas, slight dim, and blur the outer
+    `PHOTO_EDGE_BLUR_RING_FRAC` so the route polyline + HUD text read
+    cleanly on top. Returns a BGR ndarray of shape (canvas_h, canvas_w, 3).
+    Returns a black canvas on any failure (so the tail still renders)."""
+    if not photo_path or not Path(photo_path).exists():
+        return np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
+    img = cv2.imread(str(photo_path), cv2.IMREAD_COLOR)
+    if img is None:
+        return np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
+    ih, iw = img.shape[:2]
+    # cover-fit: scale so canvas is fully covered, then centre-crop
+    s = max(canvas_w / iw, canvas_h / ih)
+    new_w, new_h = int(round(iw * s)), int(round(ih * s))
+    img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    x0 = max(0, (new_w - canvas_w) // 2)
+    y0 = max(0, (new_h - canvas_h) // 2)
+    img = img[y0:y0+canvas_h, x0:x0+canvas_w]
+    # build edge-blurred version + radial alpha mask (1 in centre → 0 at edge)
+    k = int(PHOTO_EDGE_BLUR_SIGMA * 4) | 1
+    blurred = cv2.GaussianBlur(img, (k, k), PHOTO_EDGE_BLUR_SIGMA)
+    yy, xx = np.mgrid[0:canvas_h, 0:canvas_w].astype(np.float32)
+    cx, cy = canvas_w / 2.0, canvas_h / 2.0
+    rx = canvas_w / 2.0 * (1.0 - PHOTO_EDGE_BLUR_RING_FRAC)
+    ry = canvas_h / 2.0 * (1.0 - PHOTO_EDGE_BLUR_RING_FRAC)
+    r_norm = np.sqrt(((xx - cx) / rx) ** 2 + ((yy - cy) / ry) ** 2)
+    centre_alpha = np.clip(1.0 - (r_norm - 1.0) / 0.6, 0.0, 1.0)[..., None]
+    img = (img.astype(np.float32) * centre_alpha
+           + blurred.astype(np.float32) * (1.0 - centre_alpha)).astype(np.uint8)
+    # slight dim so HUD reads
+    img = (img.astype(np.float32) * PHOTO_DIM_ALPHA).astype(np.uint8)
+    return img
+
+
+def draw_zoom_map(frame, proj_at_full, route_pts_unit, cur_idx, gpx_vdv, zoom_p):
+    """Render the mini-map as a box that grows from (MAP_X/Y/W/H) to
+    full canvas as zoom_p goes 0 → 1. proj_at_full(la, lo) yields (x, y)
+    in canvas pixels; route_pts_unit is the same projection's output.
+    For zoom_p < 1, the route is squeezed into the interpolated rect."""
+    # interpolate the destination rect
+    rx = int(MAP_X + (0 - MAP_X) * zoom_p)
+    ry = int(MAP_Y + (0 - MAP_Y) * zoom_p)
+    rw = int(MAP_W + (CANVAS_W - MAP_W) * zoom_p)
+    rh = int(MAP_H + (CANVAS_H - MAP_H) * zoom_p)
+    # We projected the route to MAP_W × MAP_H — rescale to the new rect.
+    sx = rw / MAP_W; sy = rh / MAP_H
+    pts_xy = [(int(rx + p[0] * sx), int(ry + p[1] * sy))
+              for p in route_pts_unit]
+
+    # subtle border that fades as the map fills the screen
+    border = DARK_GRAY if zoom_p < 0.95 else (160, 160, 160)
+    cv2.rectangle(frame, (rx, ry), (rx + rw, ry + rh), border,
+                  1 if zoom_p > 0.5 else 2)
+
+    if len(pts_xy) > 1:
+        future = pts_xy[cur_idx:]
+        if len(future) > 1:
+            fa = np.array(future, dtype=np.int32)
+            cv2.polylines(frame, [fa], False, BLACK,
+                          int(2 + 4 * zoom_p) + 2, cv2.LINE_AA)
+            cv2.polylines(frame, [fa], False, MAP_UNPASSED_GRAY,
+                          int(2 + 4 * zoom_p), cv2.LINE_AA)
+        if cur_idx > 1:
+            past = pts_xy[:cur_idx + 1]
+            pa = np.array(past, dtype=np.int32)
+            cv2.polylines(frame, [pa], False, BLACK,
+                          int(2 + 4 * zoom_p) + 2, cv2.LINE_AA)
+            for i in range(len(past) - 1):
+                c = vdv_to_map_color(gpx_vdv[i])
+                cv2.line(frame, past[i], past[i + 1], c,
+                         int(2 + 4 * zoom_p), cv2.LINE_AA)
+    if 0 <= cur_idx < len(pts_xy):
+        dx, dy = pts_xy[cur_idx]
+        r_outer = int(9 + 14 * zoom_p)
+        r_inner = int(7 + 12 * zoom_p)
+        cv2.circle(frame, (dx, dy), r_outer, WHITE, 2, cv2.LINE_AA)
+        cv2.circle(frame, (dx, dy), r_inner, DOT_RED, -1, cv2.LINE_AA)
+
+
 # ── Main ----------------------------------------------------------------
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
@@ -338,6 +555,20 @@ def main():
                          "Example: '0:37.93,2453:2527.23' = 2 segments split "
                          "at video t=2453s.")
     ap.add_argument("--out",   required=True, type=Path)
+    ap.add_argument("--photo", type=Path, default=None,
+                    help="Strava activity photo. Used as the background "
+                         "during the post-video tail (when GPX runs longer "
+                         "than the available video, e.g. camera died early).")
+    ap.add_argument("--extend-to-gpx-end", action="store_true",
+                    help="After video EOF, keep generating frames until the "
+                         "GPX timeline finishes. Mini-map zooms from corner "
+                         "to full screen over 1.5 s and renders on top of "
+                         "the --photo background (or black if no photo).")
+    ap.add_argument("--pause-cut", action="store_true",
+                    help="Detect WayTrace pause gaps (ART time gap > "
+                         f"{PAUSE_GAP_THRESHOLD_S:.0f} s) and skip them from "
+                         "the output, with a brief on-screen caption at "
+                         "each cut. Total runtime = active recording time.")
     args = ap.parse_args()
 
     # ── Build the offset lookup. If --offsets given, use piecewise;
@@ -382,15 +613,36 @@ def main():
           f"min={vdv.min():.2f} max={vdv.max():.2f} "
           f"median={np.median(vdv):.2f}")
 
-    # GPX, speeds, projection
+    # GPX, speeds, cumulative distance, projection
     gpx = parse_gpx(args.gpx)
     if len(gpx) < 2:
         raise SystemExit("not enough GPX points")
     speeds = gpx_speeds_kmh(gpx)
+    cum_dist_m = gpx_cum_distance_m(gpx)
     proj = project_gpx_to_box(gpx, MAP_W, MAP_H)
     route_pts = [proj(la, lo) for _, la, lo in gpx]
     # GPX time relative to its first point.
     gpx_t = gpx[:, 0] - gpx[0, 0]
+
+    # Pause detection — gaps in ART timestamps that came from WayTrace
+    # being paused on the phone (e.g. coffee stop). Converted from ART
+    # time to VIDEO time below using the (possibly piecewise) offset.
+    pauses_art = []
+    if args.pause_cut:
+        pauses_art = detect_pauses_from_art(acc["t_s"].to_numpy())
+        print(f"pause cut: detected {len(pauses_art)} gap(s) > "
+              f"{PAUSE_GAP_THRESHOLD_S:.0f} s in ART")
+        for ps, pe, g in pauses_art:
+            print(f"  ART pause: {ps:8.1f}s → {pe:8.1f}s   "
+                  f"({format_pause_caption(g)})")
+
+    # Active-time footer x-axis: collapses cut pauses so the trace has
+    # no visible gap. cur_vdv still interpolates in real ART time.
+    if pauses_art:
+        t_vdv_active = np.array(
+            [art_t_to_active_t(t, pauses_art) for t in t_vdv])
+    else:
+        t_vdv_active = t_vdv
 
     # Per-GPX-point VDV by fractional progress through the push (so the
     # minimap can colour each passed segment by the VDV at that point).
@@ -439,9 +691,31 @@ def main():
     SPEED_HUD_INTERVAL_S = 1.0
     GPS_STALE_GAP_S = 3.0
     last_speed_hud_t = -1e9
-    speed_hud = None
+    speed_displayed = None   # integer km/h currently shown (hysteresis state)
+
+    # Convert ART-time pauses into VIDEO-time pauses using the offset
+    # lookup. art = video + offset  →  video = art - offset; we solve
+    # piecewise by scanning offset segments.
+    def art_t_to_video_t(t_art):
+        off = segments[0][1]
+        v_candidate = t_art - off
+        for seg_t, seg_off in segments:
+            if t_art - seg_off >= seg_t:
+                v_candidate = t_art - seg_off
+            else:
+                break
+        return v_candidate
+    pauses_video = [(art_t_to_video_t(ps), art_t_to_video_t(pe), g)
+                    for ps, pe, g in pauses_art]
+    if pauses_video:
+        for vs, ve, g in pauses_video:
+            print(f"  VIDEO pause: {vs:8.1f}s → {ve:8.1f}s   "
+                  f"({format_pause_caption(g)})")
 
     frame_i = 0
+    pause_caption_until_video_t = -1.0
+    current_pause_caption = ""
+    seen_pauses = set()
     while True:
         ret, frame = cap.read()
         if not ret:
@@ -450,6 +724,32 @@ def main():
             frame = cv2.resize(frame, (CANVAS_W, CANVAS_H),
                                interpolation=cv2.INTER_AREA)
         t_video = frame_i / fps
+        frame_i += 1
+        if frame_i % 600 == 0:
+            print(f"  frame {frame_i}/{nf}", flush=True)
+
+        # Pause handling: if t_video falls inside a paused interval, the
+        # caption renders for the first PAUSE_CAPTION_HOLD_S of that
+        # interval (on otherwise-empty black frames), then the remainder
+        # of the pause is skipped from the output entirely.
+        pi, pgap = video_t_in_pause(t_video, pauses_video)
+        if pi is not None:
+            vs, ve, _ = pauses_video[pi]
+            if pi not in seen_pauses:
+                seen_pauses.add(pi)
+                pause_caption_until_video_t = vs + PAUSE_CAPTION_HOLD_S
+                current_pause_caption = format_pause_caption(pgap)
+            if t_video < pause_caption_until_video_t:
+                # render caption on a near-black canvas (no live data
+                # makes sense during a pause)
+                cap_frame = np.zeros_like(frame)
+                text_outlined(cap_frame, current_pause_caption,
+                              (CANVAS_W // 2 - 180, CANVAS_H // 2),
+                              2.4, YELLOW, thickness=5, outline=7)
+                writer.write(cap_frame)
+            # else: silently drop the rest of the paused frames
+            continue
+
         # Piecewise (or single) offset lookup — handles
         # camera-stop/restart pushes per Vasil's "break" sync.
         t_art   = t_video + video_t_to_offset(t_video)
@@ -462,15 +762,23 @@ def main():
         else:
             cur_idx = 0 if t_art < 0 else gpx_n - 1
 
-        # Speed HUD: latched at 1 Hz of video time. Blank when the
-        # nearest GPX sample is > GPS_STALE_GAP_S away (dropout).
+        # Speed HUD: latched at 1 Hz of video time. Smoothed over 50 m of
+        # GPX, integer km/h, with hysteresis so the number is stable.
         if t_video - last_speed_hud_t >= SPEED_HUD_INTERVAL_S:
             if 0 <= t_art <= gpx_t[-1]:
                 gpx_gap = abs(gpx_t[cur_idx] - t_art)
-                speed_hud = (None if gpx_gap > GPS_STALE_GAP_S
-                             else float(np.interp(t_art, gpx_t, speeds)))
+                if gpx_gap > GPS_STALE_GAP_S:
+                    speed_displayed = None
+                else:
+                    raw = smoothed_speed_kmh(t_art, gpx_t,
+                                             cum_dist_m, speeds)
+                    if raw is not None and (
+                        speed_displayed is None
+                        or abs(raw - speed_displayed) >= SPEED_HYSTERESIS_KMH
+                    ):
+                        speed_displayed = round(raw * 2) / 2.0
             else:
-                speed_hud = None
+                speed_displayed = None
             last_speed_hud_t = t_video
 
         # Current windowed VDV (QA-1) + derived ISO class (QA-7)
@@ -478,9 +786,11 @@ def main():
         iso_class = vdv_to_iso_class(cur_vdv)
 
         # ── Draw layers ─────────────────────────────────────────────────
-        draw_title_and_speed(frame, args.title, speed_hud, iso_class)
+        draw_title_and_speed(frame, args.title, speed_displayed, iso_class)
         draw_map(frame, proj, route_pts, cur_idx, gpx_vdv)
-        draw_footer(frame, t_art, t_vdv, vdv, cur_vdv)
+        draw_footer(frame,
+                    art_t_to_active_t(t_art, pauses_art),
+                    t_vdv_active, vdv, cur_vdv)
 
         # BREAK badge on the seam between piecewise segments
         # (camera-stop/restart) — within ±2 s of a boundary.
@@ -490,11 +800,66 @@ def main():
                           2.2, MAGENTA, thickness=5, outline=6)
 
         writer.write(frame)
-        frame_i += 1
-        if frame_i % 60 == 0:
-            print(f"  frame {frame_i}/{nf}", flush=True)
 
     cap.release()
+
+    # ── Photo + zoom-to-fullscreen mini-map TAIL ────────────────────────
+    # If the camera died before the activity finished and --extend-to-gpx-end
+    # is on, we keep generating frames until the GPX timeline runs out.
+    # The video stream is gone, so the background becomes the Strava photo.
+    if args.extend_to_gpx_end:
+        last_t_video = frame_i / fps
+        last_t_art = last_t_video + video_t_to_offset(last_t_video)
+        # If the camera died inside a paused interval, jump past the pause
+        # so the tail does not render frames against stale ART data.
+        for ps, pe, _ in pauses_art:
+            if ps <= last_t_art < pe:
+                print(f"tail: video EOF lands inside pause "
+                      f"({ps:.1f}s → {pe:.1f}s); advancing to {pe:.1f}s")
+                last_t_art = pe
+                break
+        if last_t_art < gpx_t[-1]:
+            extra_s = float(gpx_t[-1] - last_t_art)
+            extra_frames = int(round(extra_s * fps))
+            print(f"tail: extending {extra_frames} frames "
+                  f"({extra_s:.1f} s) over photo background "
+                  f"(zoom {ZOOM_DURATION_S:.1f}s)")
+            photo_bg = prepare_photo_background(args.photo)
+            zoom_frames = int(round(ZOOM_DURATION_S * fps))
+            tail_t_art_start = last_t_art
+            for k in range(extra_frames):
+                t_art = tail_t_art_start + k / fps
+                zoom_p = ease_out_cubic(k / max(1, zoom_frames - 1)) \
+                         if k < zoom_frames else 1.0
+                frame = photo_bg.copy()
+                if 0 <= t_art <= gpx_t[-1]:
+                    cur_idx = int(np.searchsorted(gpx_t, t_art))
+                    cur_idx = max(0, min(gpx_n - 1, cur_idx))
+                else:
+                    cur_idx = gpx_n - 1
+                # Speed: same 50 m smoothing + hysteresis
+                if k % max(1, int(fps * SPEED_HUD_INTERVAL_S)) == 0:
+                    raw = smoothed_speed_kmh(t_art, gpx_t,
+                                             cum_dist_m, speeds)
+                    if raw is not None and (
+                        speed_displayed is None
+                        or abs(raw - speed_displayed) >= SPEED_HYSTERESIS_KMH
+                    ):
+                        speed_displayed = round(raw * 2) / 2.0
+                cur_vdv = float(np.interp(t_art, t_vdv, vdv)) \
+                          if len(t_vdv) else 0.0
+                iso_class = vdv_to_iso_class(cur_vdv)
+                draw_zoom_map(frame, proj, route_pts, cur_idx,
+                              gpx_vdv, zoom_p)
+                draw_title_and_speed(frame, args.title,
+                                     speed_displayed, iso_class)
+                draw_footer(frame,
+                            art_t_to_active_t(t_art, pauses_art),
+                            t_vdv_active, vdv, cur_vdv)
+                writer.write(frame)
+                if (k + 1) % 600 == 0:
+                    print(f"  tail frame {k+1}/{extra_frames}", flush=True)
+
     writer.release()
     print(f"wrote temp video, re-encoding + muxing audio …")
 

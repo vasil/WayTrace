@@ -50,6 +50,15 @@ ART_CSV="${ART_CSV:-$HOME/waytrace-video/push/ART-MERGED-${PUSH_TS}.csv}"
 GPX="${GPX:-$HOME/waytrace-video/art/GPS-${PUSH_TS}.gpx}"
 TITLE="${TITLE:-Rear Window Push}"
 
+# OSI-2026-06-30: optional Strava activity photo. When set + readable,
+# the dashboard zooms the mini-map to full screen over this photo for
+# the time the GPX runs after the video EOF (camera died early).
+PHOTO="${PHOTO:-}"
+# OSI-2026-06-30: pause cut. When 1, ART time gaps > 30 s are treated
+# as WayTrace pauses (coffee stop), and the dashboard hard-cuts past
+# them with a brief 'paused N min' caption.
+PAUSE_CUT="${PAUSE_CUT:-1}"
+
 ROOT="$HOME/waytrace-video"
 OUT_DIR="$HOME/Videos/VIDEO_dashboard"
 TMP_DIR="$ROOT/tmp"
@@ -209,12 +218,22 @@ if [[ "$OFFSET" == *","* ]]; then
 else
     OFFSET_ARG=( --video-art-offset "$OFFSET" )
 fi
+EXTRA_ARGS=()
+if [ -n "$PHOTO" ] && [ -f "$PHOTO" ]; then
+    EXTRA_ARGS+=( --photo "$PHOTO" --extend-to-gpx-end )
+    log "    photo tail: $(basename "$PHOTO") (zoom-to-fullscreen after video EOF)"
+fi
+if [ "$PAUSE_CUT" = "1" ]; then
+    EXTRA_ARGS+=( --pause-cut )
+    log "    pause cut: ON (ART gaps > 30 s removed from output)"
+fi
 if ! python -u "$ROOT/osi007_dashboard.py" \
         --video "$BLURRED" \
         --art   "$ART_CSV" \
         --gpx   "$GPX" \
         --title "$TITLE" \
         "${OFFSET_ARG[@]}" \
+        "${EXTRA_ARGS[@]}" \
         --out   "$FINAL" \
         > "$TMP_DIR/${PUSH_TS}_dash.log" 2>&1; then
     log "    DASHBOARD FAILED — see $TMP_DIR/${PUSH_TS}_dash.log"; exit 1
