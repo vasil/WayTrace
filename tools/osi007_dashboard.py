@@ -636,13 +636,10 @@ def main():
             print(f"  ART pause: {ps:8.1f}s → {pe:8.1f}s   "
                   f"({format_pause_caption(g)})")
 
-    # Active-time footer x-axis: collapses cut pauses so the trace has
-    # no visible gap. cur_vdv still interpolates in real ART time.
-    if pauses_art:
-        t_vdv_active = np.array(
-            [art_t_to_active_t(t, pauses_art) for t in t_vdv])
-    else:
-        t_vdv_active = t_vdv
+    # Active-time footer x-axis is set up AFTER the video is opened (nf
+    # is needed to compute the last segment's ART coverage). See the
+    # `active_time_gaps` block below.
+    t_vdv_active = t_vdv     # default; may be re-computed after cap opens
 
     # Per-GPX-point VDV by fractional progress through the push (so the
     # minimap can colour each passed segment by the VDV at that point).
@@ -693,24 +690,71 @@ def main():
     last_speed_hud_t = -1e9
     speed_displayed = None   # integer km/h currently shown (hysteresis state)
 
-    # Convert ART-time pauses into VIDEO-time pauses using the offset
-    # lookup. art = video + offset  →  video = art - offset; we solve
-    # piecewise by scanning offset segments.
-    def art_t_to_video_t(t_art):
-        off = segments[0][1]
-        v_candidate = t_art - off
-        for seg_t, seg_off in segments:
-            if t_art - seg_off >= seg_t:
-                v_candidate = t_art - seg_off
-            else:
-                break
-        return v_candidate
-    pauses_video = [(art_t_to_video_t(ps), art_t_to_video_t(pe), g)
-                    for ps, pe, g in pauses_art]
+    # ── Piecewise-aware pause + active-time bookkeeping (bug fix 2026-07-02)
+    #
+    # Each piecewise segment covers a specific ART range (= its video range
+    # + its offset). Two derivatives are needed:
+    #
+    #   pauses_video      — video-time intervals to actually cut from output.
+    #                        Only ART pause portions that OVERLAP with a
+    #                        segment's coverage produce cuts. An ART pause
+    #                        entirely inside a piecewise gap (coffee break)
+    #                        produces no cut — concat already skipped it.
+    #                        The previous code used a single-scanning
+    #                        offset and mis-mapped coffee-break pauses
+    #                        onto session-2 video times, cutting real
+    #                        session-2 content out of the output (bug).
+    #
+    #   active_time_gaps  — footer-x-axis intervals to collapse. Union of
+    #                        real ART pauses AND piecewise segment gaps
+    #                        (merged into non-overlapping intervals). This
+    #                        makes the footer trace continuous across BOTH
+    #                        WayTrace pauses AND camera-off gaps.
+    video_end_t = nf / max(fps, 1)
+    seg_art_coverage = []
+    for i, (seg_t, seg_off) in enumerate(segments):
+        seg_end_v = segments[i+1][0] if i+1 < len(segments) else video_end_t
+        seg_art_coverage.append((seg_t + seg_off, seg_end_v + seg_off, seg_off))
+
+    # pauses_video
+    pauses_video = []
+    for ps, pe, g in pauses_art:
+        for art_lo, art_hi, seg_off in seg_art_coverage:
+            overlap_lo = max(ps, art_lo)
+            overlap_hi = min(pe, art_hi)
+            if overlap_lo < overlap_hi:
+                pauses_video.append(
+                    (overlap_lo - seg_off,
+                     overlap_hi - seg_off,
+                     overlap_hi - overlap_lo))
     if pauses_video:
         for vs, ve, g in pauses_video:
             print(f"  VIDEO pause: {vs:8.1f}s → {ve:8.1f}s   "
                   f"({format_pause_caption(g)})")
+    if pauses_art and not pauses_video:
+        print("  (ART pauses fall entirely in piecewise gaps; "
+              "no video frames to cut)")
+
+    # active_time_gaps: real pauses ∪ piecewise segment gaps, merged.
+    _gap_intervals = [(ps, pe, pe - ps) for ps, pe, _ in pauses_art]
+    for i in range(len(seg_art_coverage) - 1):
+        art_hi_i = seg_art_coverage[i][1]
+        art_lo_next = seg_art_coverage[i+1][0]
+        if art_lo_next > art_hi_i:
+            _gap_intervals.append(
+                (art_hi_i, art_lo_next, art_lo_next - art_hi_i))
+    _gap_intervals.sort(key=lambda x: x[0])
+    active_time_gaps = []
+    for lo, hi, _ in _gap_intervals:
+        if active_time_gaps and lo <= active_time_gaps[-1][1]:
+            new_hi = max(active_time_gaps[-1][1], hi)
+            active_time_gaps[-1] = (active_time_gaps[-1][0], new_hi,
+                                    new_hi - active_time_gaps[-1][0])
+        else:
+            active_time_gaps.append((lo, hi, hi - lo))
+    if active_time_gaps:
+        t_vdv_active = np.array(
+            [art_t_to_active_t(t, active_time_gaps) for t in t_vdv])
 
     frame_i = 0
     pause_caption_until_video_t = -1.0
@@ -789,7 +833,7 @@ def main():
         draw_title_and_speed(frame, args.title, speed_displayed, iso_class)
         draw_map(frame, proj, route_pts, cur_idx, gpx_vdv)
         draw_footer(frame,
-                    art_t_to_active_t(t_art, pauses_art),
+                    art_t_to_active_t(t_art, active_time_gaps),
                     t_vdv_active, vdv, cur_vdv)
 
         # BREAK badge on the seam between piecewise segments
@@ -854,7 +898,7 @@ def main():
                 draw_title_and_speed(frame, args.title,
                                      speed_displayed, iso_class)
                 draw_footer(frame,
-                            art_t_to_active_t(t_art, pauses_art),
+                            art_t_to_active_t(t_art, active_time_gaps),
                             t_vdv_active, vdv, cur_vdv)
                 writer.write(frame)
                 if (k + 1) % 600 == 0:
